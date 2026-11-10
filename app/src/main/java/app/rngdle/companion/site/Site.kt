@@ -41,14 +41,19 @@ sealed interface PageState {
     data class Failed(val reason: SiteFailure) : PageState
 }
 
-enum class SiteFailure { OFFLINE, HTTP, TLS, TIMEOUT, NAVIGATION, WEBVIEW }
+enum class SiteFailure { OFFLINE, HTTP, TLS, TIMEOUT, RENDERING, NAVIGATION, WEBVIEW }
 
-internal fun PageState.observeContent(visibleContent: Boolean): PageState =
-    if (this == PageState.Loading && visibleContent) PageState.Ready else this
+internal fun PageState.observeFrame(document: Int, drawnDocument: Int?): PageState =
+    if (this == PageState.Loading && drawnDocument == document) PageState.Ready else this
 
 enum class AuthState { CHECKING, SIGNED_OUT, OPENING_FORM, ENTER_EMAIL, CHECK_MAIL, COMPLETING, SIGNED_IN, FORM_UNAVAILABLE, LINK_FAILED }
 
 enum class AccountMarker { UNKNOWN, SIGNED_OUT, EMAIL_FORM, MAIL_SENT, SIGNED_IN }
+
+internal fun SitePage.needsSignIn(auth: AuthState): Boolean = this == SitePage.PROFILE && when (auth) {
+    AuthState.SIGNED_OUT, AuthState.CHECK_MAIL, AuthState.FORM_UNAVAILABLE, AuthState.LINK_FAILED -> true
+    else -> false
+}
 
 internal fun AuthState.observe(marker: AccountMarker): AuthState = when {
     marker == AccountMarker.SIGNED_IN -> AuthState.SIGNED_IN

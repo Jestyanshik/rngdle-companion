@@ -29,6 +29,7 @@ import app.rngdle.companion.site.AuthState
 import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SiteFailure
 import app.rngdle.companion.site.SitePage
+import app.rngdle.companion.site.needsSignIn
 
 @Composable
 internal fun SiteAuthBar(auth: AuthState, available: Boolean, onSignIn: () -> Unit, onPaste: () -> Unit) {
@@ -64,11 +65,12 @@ internal fun SitePageOverlay(
     pageState: PageState,
     auth: AuthState,
     onRetry: () -> Unit,
+    onCompatibleRendering: () -> Unit,
     onSignIn: () -> Unit,
     onBrowser: () -> Unit,
 ) {
     when {
-        pageState == PageState.Loading -> SitePanel {
+        pageState == PageState.Loading -> SitePanel(translucent = true) {
             CircularProgressIndicator()
             Text(if (auth == AuthState.COMPLETING) "Выполняется вход…" else "Загружаем RNGdle…")
         }
@@ -78,6 +80,7 @@ internal fun SitePageOverlay(
                 SiteFailure.HTTP -> "RNGdle вернул ошибку"
                 SiteFailure.TLS -> "Не удалось установить защищённое соединение"
                 SiteFailure.TIMEOUT -> "Страница RNGdle не отобразилась вовремя"
+                SiteFailure.RENDERING -> "WebView загрузил страницу, но не отрисовал её"
                 SiteFailure.NAVIGATION -> "Не удалось открыть страницу RNGdle"
                 SiteFailure.WEBVIEW -> "Не удалось запустить Android WebView"
             }
@@ -86,11 +89,12 @@ internal fun SitePageOverlay(
                 Text("Проверьте подключение и наличие обновления Android System WebView или Chrome.")
             }
             Button(onClick = onRetry) { Text("Повторить") }
+            if (pageState.reason == SiteFailure.RENDERING) {
+                TextButton(onClick = onCompatibleRendering) { Text("Включить совместимую отрисовку") }
+            }
             TextButton(onClick = onBrowser) { Text("Открыть в браузере") }
         }
-        page == SitePage.PROFILE && auth in listOf(
-            AuthState.SIGNED_OUT, AuthState.CHECK_MAIL, AuthState.FORM_UNAVAILABLE, AuthState.LINK_FAILED,
-        ) -> SitePanel {
+        page.needsSignIn(auth) -> SitePanel {
             Text("Войдите, чтобы открыть профиль RNGdle.", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onSignIn) { Text("Войти") }
         }
@@ -98,8 +102,9 @@ internal fun SitePageOverlay(
 }
 
 @Composable
-private fun SitePanel(content: @Composable () -> Unit) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+private fun SitePanel(translucent: Boolean = false, content: @Composable () -> Unit) {
+    val background = MaterialTheme.colorScheme.background
+    Surface(Modifier.fillMaxSize(), color = if (translucent) background.copy(alpha = 0.88f) else background) {
         Column(
             Modifier.fillMaxSize().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

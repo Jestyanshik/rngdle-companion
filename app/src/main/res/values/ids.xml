@@ -1,0 +1,5 @@
+<resources>
+    <item name="site_header" type="id" />
+    <item name="site_overlay" type="id" />
+    <item name="site_navigation" type="id" />
+</resources>

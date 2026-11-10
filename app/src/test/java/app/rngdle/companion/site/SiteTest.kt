@@ -6,11 +6,19 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SiteTest {
-    @Test fun aFinishedButEmptyDocumentStaysLoadingAndCannotOverrideAnError() {
-        assertEquals(PageState.Loading, PageState.Loading.observeContent(false))
-        assertEquals(PageState.Ready, PageState.Loading.observeContent(true))
+    @Test fun onlyADrawnFrameFromTheCurrentDocumentCanFinishLoading() {
+        assertEquals(PageState.Loading, PageState.Loading.observeFrame(2, null))
+        assertEquals(PageState.Loading, PageState.Loading.observeFrame(2, 1))
+        assertEquals(PageState.Ready, PageState.Loading.observeFrame(2, 2))
         val failed = PageState.Failed(SiteFailure.HTTP)
-        assertEquals(failed, failed.observeContent(true))
+        assertEquals(failed, failed.observeFrame(2, 2))
+    }
+
+    @Test fun onlyAGuestProfileCoversTheReadyWebViewWithASignInPanel() {
+        assertEquals(true, SitePage.PROFILE.needsSignIn(AuthState.SIGNED_OUT))
+        assertEquals(false, SitePage.PROFILE.needsSignIn(AuthState.ENTER_EMAIL))
+        assertEquals(false, SitePage.PROFILE.needsSignIn(AuthState.SIGNED_IN))
+        assertEquals(false, SitePage.RANKINGS.needsSignIn(AuthState.SIGNED_OUT))
     }
 
     @Test fun pastedLinkRetainsTheOriginalEncodingAndRejectsExternalLinks() {

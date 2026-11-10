@@ -10,19 +10,20 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Home
@@ -33,7 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -41,17 +41,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -61,6 +63,7 @@ import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SiteFailure
 import app.rngdle.companion.site.SitePage
 import app.rngdle.companion.site.SiteWebView
+import app.rngdle.companion.site.needsSignIn
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -68,6 +71,12 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val model: CompanionViewModel by viewModels()
     private var web by mutableStateOf<SiteWebView?>(null)
+    private lateinit var siteHost: FrameLayout
+    private lateinit var siteOverlay: ComposeView
+    private lateinit var siteHeader: ComposeView
+    private var companionSettings by mutableStateOf(false)
+    private var loginDialog by mutableStateOf(false)
+    private var compatibleRendering by mutableStateOf(false)
     private var exactAccess by mutableStateOf(false)
     private var notificationAccess by mutableStateOf(false)
 
@@ -92,10 +101,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        companionSettings = savedInstanceState?.getBoolean("companionSettings") ?: false
+        compatibleRendering = getPreferences(MODE_PRIVATE).getBoolean(COMPATIBLE_RENDERING, false)
+        setContentView(createLayout())
         createWebView()
-        setContent {
-            MaterialTheme(colorScheme = companionColors) { CompanionScreen() }
-        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("companionSettings", companionSettings)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -121,15 +135,84 @@ class MainActivity : ComponentActivity() {
         val auth = model.auth.value.takeIf { it == AuthState.CHECK_MAIL } ?: AuthState.CHECKING
         model.showAuthState(auth)
         web = try {
-            SiteWebView(this, model.page.value, auth, model::showPageState, model::selectPage, model::showAuthState) {
-                if (web === it) web = null
-                it.dispose()
+            SiteWebView(
+                this, model.page.value, auth,
+                onState = { model.showPageState(it); updateSiteVisibility() },
+                onPage = { model.selectPage(it); updateSiteVisibility() },
+                onAuth = { model.showAuthState(it); updateSiteVisibility() },
+                onRendererGone = {
+                    if (web === it) web = null
+                    it.dispose()
+                },
+            ).apply {
+                setCompatibleRendering(compatibleRendering)
+                siteHost.addView(this, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             }
         } catch (_: RuntimeException) {
             Log.w("RNGdleWeb", "creation_failed")
             model.showPageState(PageState.Failed(SiteFailure.WEBVIEW))
             null
         }
+        updateSiteVisibility()
+    }
+
+    private fun createLayout(): View {
+        siteHeader = composeView(R.id.site_header) {
+            val auth by model.auth.collectAsStateWithLifecycle()
+            SiteAuthBar(
+                auth = auth,
+                available = web != null,
+                onSignIn = { web?.requestLogin() },
+                onPaste = { if (!pasteEmailLink()) loginDialog = true },
+            )
+        }
+        siteOverlay = composeView(R.id.site_overlay) { SiteOverlay() }.apply { isClickable = true }
+        siteHost = FrameLayout(this).apply {
+            addView(siteOverlay, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xff121117.toInt())
+            addView(siteHeader, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(siteHost, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            addView(composeView(R.id.site_navigation) { NavigationAndLogin() },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
+                val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+                view.setPadding(safe.left, safe.top, safe.right, maxOf(safe.bottom, keyboard.bottom))
+                WindowInsetsCompat.CONSUMED
+            }
+        }
+    }
+
+    private fun composeView(viewId: Int, content: @Composable () -> Unit) = ComposeView(this).apply {
+        id = viewId
+        setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+        setContent { MaterialTheme(colorScheme = companionColors) { content() } }
+    }
+
+    private fun updateSiteVisibility() {
+        val covered = companionSettings || model.webState.value != PageState.Ready ||
+            model.page.value.needsSignIn(model.auth.value)
+        siteHeader.visibility = if (companionSettings) View.GONE else View.VISIBLE
+        siteOverlay.visibility = if (covered) View.VISIBLE else View.GONE
+        web?.apply {
+            importantForAccessibility = if (covered) View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            else View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            showSite(!companionSettings)
+        }
+    }
+
+    private fun showSettings(show: Boolean) {
+        companionSettings = show
+        updateSiteVisibility()
+    }
+
+    private fun changeRendering(enabled: Boolean) {
+        compatibleRendering = enabled
+        getPreferences(MODE_PRIVATE).edit().putBoolean(COMPATIBLE_RENDERING, enabled).apply()
+        web?.setCompatibleRendering(enabled)
     }
 
     private fun openPage(destination: SitePage) {
@@ -200,18 +283,9 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun CompanionScreen() {
+    private fun NavigationAndLogin() {
         val page by model.page.collectAsStateWithLifecycle()
-        val webState by model.webState.collectAsStateWithLifecycle()
-        val auth by model.auth.collectAsStateWithLifecycle()
-        val settings by model.reminderSettings.collectAsStateWithLifecycle()
-        val update by model.update.collectAsStateWithLifecycle()
-        val reminderError by model.reminderError.collectAsStateWithLifecycle()
-        var companionSettings by rememberSaveable { mutableStateOf(false) }
         var canGoBack by remember { mutableStateOf(false) }
-        var loginDialog by remember { mutableStateOf(false) }
-        val snackbar = remember { SnackbarHostState() }
-        val scope = rememberCoroutineScope()
 
         LaunchedEffect(companionSettings, web) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -225,94 +299,36 @@ class MainActivity : ComponentActivity() {
             }
         }
         BackHandler(companionSettings || canGoBack) {
-            if (companionSettings) companionSettings = false
+            if (companionSettings) showSettings(false)
             else web?.let { if (it.canNavigateBack()) it.goBack() }
         }
 
-        Scaffold(
-            snackbarHost = { SnackbarHost(snackbar) },
-            bottomBar = {
-                NavigationBar {
-                    SitePage.entries.forEach { destination ->
-                        val (label, icon) = when (destination) {
-                            SitePage.PLAY -> "Игра" to Icons.Default.Home
-                            SitePage.RANKINGS -> "Рейтинг" to Icons.Default.Star
-                            SitePage.FRIENDS -> "Друзья" to Icons.Default.Face
-                            SitePage.PROFILE -> "Профиль" to Icons.Default.Person
-                        }
-                        NavigationBarItem(
-                            selected = !companionSettings && page == destination,
-                            onClick = {
-                                val resumeCurrentPage = companionSettings && page == destination
-                                companionSettings = false
-                                if (!resumeCurrentPage) openPage(destination)
-                                canGoBack = web?.canNavigateBack() == true
-                            },
-                            icon = { Icon(icon, contentDescription = null) },
-                            label = { Text(label, maxLines = 1) },
-                        )
-                    }
-                    NavigationBarItem(
-                        selected = companionSettings,
-                        onClick = { companionSettings = true },
-                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                        label = { Text("Настройки", maxLines = 1) },
-                    )
+        NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
+            SitePage.entries.forEach { destination ->
+                val (label, icon) = when (destination) {
+                    SitePage.PLAY -> "Игра" to Icons.Default.Home
+                    SitePage.RANKINGS -> "Рейтинг" to Icons.Default.Star
+                    SitePage.FRIENDS -> "Друзья" to Icons.Default.Face
+                    SitePage.PROFILE -> "Профиль" to Icons.Default.Person
                 }
-            },
-        ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-                if (!companionSettings) {
-                    SiteAuthBar(
-                        auth = auth,
-                        available = web != null,
-                        onSignIn = { web?.requestLogin() },
-                        onPaste = { if (!pasteEmailLink()) loginDialog = true },
-                    )
-                }
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    web?.let { current ->
-                        key(current) {
-                            AndroidView(
-                                factory = { current },
-                                modifier = Modifier.matchParentSize(),
-                                update = { view ->
-                                    view.visibility = if (companionSettings) android.view.View.INVISIBLE
-                                    else android.view.View.VISIBLE
-                                },
-                            )
-                        }
-                    }
-                    if (companionSettings) {
-                        SettingsScreen(
-                            settings = settings,
-                            reminderError = reminderError,
-                            notificationAccess = notificationAccess,
-                            exactAccess = exactAccess,
-                            update = update,
-                            updateConfigured = model.updateConfigured,
-                            onChange = { model.changeReminder(it) },
-                            onNotificationAccess = ::requestNotifications,
-                            onExactAccess = ::requestExactAlarm,
-                            onSound = { soundPicker.launch(arrayOf("audio/*")) },
-                            onCheck = model::checkUpdates,
-                            onDownload = model::downloadUpdate,
-                            onInstall = { apk ->
-                                installUpdate(apk)?.let { message -> scope.launch { snackbar.showSnackbar(message) } }
-                            },
-                        )
-                    } else {
-                        SitePageOverlay(
-                            page = page,
-                            pageState = webState,
-                            auth = auth,
-                            onRetry = ::retryPage,
-                            onSignIn = { web?.requestLogin() },
-                            onBrowser = { SiteWebView.openBrowser(this@MainActivity, Uri.parse(page.url)) },
-                        )
-                    }
-                }
+                NavigationBarItem(
+                    selected = !companionSettings && page == destination,
+                    onClick = {
+                        val resumeCurrentPage = companionSettings && page == destination
+                        if (!resumeCurrentPage) openPage(destination)
+                        showSettings(false)
+                        canGoBack = web?.canNavigateBack() == true
+                    },
+                    icon = { Icon(icon, contentDescription = null) },
+                    label = { Text(label, maxLines = 1) },
+                )
             }
+            NavigationBarItem(
+                selected = companionSettings,
+                onClick = { showSettings(true) },
+                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                label = { Text("Настройки", maxLines = 1) },
+            )
         }
         if (loginDialog) {
             MagicLinkDialog(
@@ -322,6 +338,59 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
+    }
+
+    @Composable
+    private fun SiteOverlay() {
+        val page by model.page.collectAsStateWithLifecycle()
+        val webState by model.webState.collectAsStateWithLifecycle()
+        val auth by model.auth.collectAsStateWithLifecycle()
+        val settings by model.reminderSettings.collectAsStateWithLifecycle()
+        val update by model.update.collectAsStateWithLifecycle()
+        val reminderError by model.reminderError.collectAsStateWithLifecycle()
+        if (companionSettings) {
+            val snackbar = remember { SnackbarHostState() }
+            val scope = rememberCoroutineScope()
+            Box(Modifier.fillMaxSize()) {
+                SettingsScreen(
+                    settings = settings,
+                    reminderError = reminderError,
+                    notificationAccess = notificationAccess,
+                    exactAccess = exactAccess,
+                    update = update,
+                    updateConfigured = model.updateConfigured,
+                    compatibleRendering = compatibleRendering,
+                    onRenderingChange = ::changeRendering,
+                    onChange = { model.changeReminder(it) },
+                    onNotificationAccess = ::requestNotifications,
+                    onExactAccess = ::requestExactAlarm,
+                    onSound = { soundPicker.launch(arrayOf("audio/*")) },
+                    onCheck = model::checkUpdates,
+                    onDownload = model::downloadUpdate,
+                    onInstall = { apk ->
+                        installUpdate(apk)?.let { message -> scope.launch { snackbar.showSnackbar(message) } }
+                    },
+                )
+                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+            }
+        } else {
+            SitePageOverlay(
+                page = page,
+                pageState = webState,
+                auth = auth,
+                onRetry = ::retryPage,
+                onCompatibleRendering = {
+                    changeRendering(true)
+                    retryPage()
+                },
+                onSignIn = { web?.requestLogin() },
+                onBrowser = { SiteWebView.openBrowser(this@MainActivity, Uri.parse(page.url)) },
+            )
+        }
+    }
+
+    private companion object {
+        const val COMPATIBLE_RENDERING = "compatible_site_rendering"
     }
 }
 

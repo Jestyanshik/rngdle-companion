@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
 import android.util.Log
@@ -39,6 +40,8 @@ class SiteWebView(
     private var committed = false
     private var documentVersion = 0
     private var inspectedVersion: Int? = null
+    private var visualRequestVersion: Int? = null
+    private var drawableVersion: Int? = null
     private var loginClicked = false
     private var clearAuthHistory = false
     private var jsErrorReported = false
@@ -47,7 +50,9 @@ class SiteWebView(
     private val observeScript = context.assets.open("site-observer.js").bufferedReader().use { it.readText() }
     private val loginScript = context.assets.open("site-open-login.js").bufferedReader().use { it.readText() }
     private val pageDeadline = Runnable {
-        if (pageState == PageState.Loading) fail(SiteFailure.TIMEOUT)
+        if (pageState == PageState.Loading) {
+            fail(if (visualRequestVersion == documentVersion) SiteFailure.RENDERING else SiteFailure.TIMEOUT)
+        }
     }
     private val authDeadline = Runnable {
         when (auth) {
@@ -190,12 +195,18 @@ class SiteWebView(
     private fun beginLoad() {
         documentVersion++
         committed = false
+        visualRequestVersion = null
+        drawableVersion = null
         jsErrorReported = false
         resourceErrorReported = false
         homeReadyDay = null
         setPage(PageState.Loading)
+        schedulePageDeadline()
+    }
+
+    private fun schedulePageDeadline() {
         removeCallbacks(pageDeadline)
-        postDelayed(pageDeadline, 30_000)
+        if (pageState == PageState.Loading && visibility == VISIBLE) postDelayed(pageDeadline, 30_000)
     }
 
     private fun fail(reason: SiteFailure) {
@@ -214,6 +225,67 @@ class SiteWebView(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         post { startWhenLaidOut() }
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val drawn = drawableVersion ?: return
+        drawableVersion = null
+        val accelerated = canvas.isHardwareAccelerated
+        post {
+            val nextState = pageState.observeFrame(documentVersion, drawn)
+            if (nextState != pageState && visibility == VISIBLE) {
+                removeCallbacks(pageDeadline)
+                setPage(nextState)
+                Log.i(TAG, "frame_drawn width=$width height=$height hardware=$accelerated")
+            }
+        }
+    }
+
+    fun showSite(show: Boolean) {
+        val target = if (show) VISIBLE else INVISIBLE
+        if (visibility == target) return
+        visibility = target
+        if (pageState == PageState.Loading) {
+            resetFrameRequest()
+            schedulePageDeadline()
+        }
+        if (show) {
+            inspectPage()
+            postInvalidateOnAnimation()
+        }
+    }
+
+    fun setCompatibleRendering(enabled: Boolean) {
+        val layer = if (enabled) LAYER_TYPE_SOFTWARE else LAYER_TYPE_NONE
+        if (layerType == layer) return
+        setLayerType(layer, null)
+        Log.i(TAG, "compatible_rendering=$enabled")
+        if (!started || pageState is PageState.Failed) return
+        resetFrameRequest()
+        setPage(PageState.Loading)
+        schedulePageDeadline()
+        inspectPage()
+    }
+
+    private fun resetFrameRequest() {
+        documentVersion++
+        visualRequestVersion = null
+        drawableVersion = null
+    }
+
+    private fun awaitFrame(version: Int) {
+        if (pageState != PageState.Loading || !isShown || width <= 0 || height <= 0 ||
+            visualRequestVersion == version
+        ) return
+        visualRequestVersion = version
+        postVisualStateCallback(version.toLong(), object : VisualStateCallback() {
+            override fun onComplete(requestId: Long) {
+                if (requestId != documentVersion.toLong() || pageState != PageState.Loading || !isShown) return
+                drawableVersion = version
+                postInvalidateOnAnimation()
+            }
+        })
     }
 
     private fun startWhenLaidOut() {
@@ -296,12 +368,9 @@ class SiteWebView(
                     return@evaluateJavascript
                 }
             }
-            val observedPage = pageState.observeContent(snapshot.optBoolean("content"))
-            if (observedPage != pageState) {
-                removeCallbacks(pageDeadline)
-                homeReadyDay = if (isHome) ReminderPolicy.day(Instant.now()) else null
-                setPage(observedPage)
-                Log.i(TAG, "content_ready")
+            if (snapshot.optBoolean("content") && pageState == PageState.Loading) {
+                if (isHome && homeReadyDay == null) homeReadyDay = ReminderPolicy.day(Instant.now())
+                awaitFrame(version)
             }
             if (clearAuthHistory && auth != AuthState.COMPLETING && isHome && pageState == PageState.Ready) {
                 clearHistory()
@@ -354,7 +423,7 @@ class SiteWebView(
     fun dispose() {
         started = false
         committed = false
-        documentVersion++
+        resetFrameRequest()
         removeCallbacks(pageDeadline)
         removeCallbacks(authDeadline)
         (parent as? android.view.ViewGroup)?.removeView(this)

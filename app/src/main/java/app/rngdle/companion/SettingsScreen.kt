@@ -34,6 +34,8 @@ internal fun SettingsScreen(
     exactAccess: Boolean,
     update: UpdateState,
     updateConfigured: Boolean,
+    compatibleRendering: Boolean,
+    onRenderingChange: (Boolean) -> Unit,
     onChange: ((ReminderSettings) -> ReminderSettings) -> Unit,
     onNotificationAccess: () -> Unit,
     onExactAccess: () -> Unit,
@@ -48,6 +50,9 @@ internal fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Настройки приложения", style = MaterialTheme.typography.headlineSmall)
+            SettingSwitch("Совместимая отрисовка сайта", compatibleRendering, onRenderingChange)
+            Text("Включите, если вкладки сайта отображаются чёрными.")
+            HorizontalDivider()
             Text("Напоминания", style = MaterialTheme.typography.titleLarge)
             Text("Новый игровой день начинается в 00:00 UTC.")
             SettingSwitch("Уведомлять о сбросе", settings.enabled) { enabled ->

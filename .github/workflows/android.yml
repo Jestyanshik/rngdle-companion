@@ -4,6 +4,7 @@ on:
   push:
     branches: ['**']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,3 +28,75 @@ jobs:
           name: rngdle-companion-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  webview-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rngdle-companion-debug
+      - name: Start an Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chmod a+rw /dev/kvm
+          sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -print -quit)"
+          image='system-images;android-35;google_apis;x86_64'
+          "$sdkmanager" 'emulator' "$image"
+          printf 'no\n' | "$(dirname "$sdkmanager")/avdmanager" create avd --force --name rngdle-smoke --package "$image"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd rngdle-smoke -no-window -no-audio \
+            -no-snapshot -no-boot-anim -gpu swiftshader -camera-back none -camera-front none \
+            > "$RUNNER_TEMP/rngdle-emulator.log" 2>&1 &
+          timeout 240 adb wait-for-device
+          timeout 180 bash -c 'until [[ "$(adb shell getprop sys.boot_completed | tr -d "\r")" == 1 ]]; do sleep 3; done'
+          adb shell input keyevent 82
+          adb shell wm size 540x960
+          adb shell wm density 240
+      - name: Verify that the game and rankings draw on Android
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb install app-debug.apk
+          adb logcat -c
+          adb shell am start -W -n app.rngdle.companion.debug/app.rngdle.companion.MainActivity
+          wait_for_frame() {
+            local expected="$1" count
+            for _ in {1..36}; do
+              count="$(adb logcat -d -s 'RNGdleWeb:I' '*:S' | grep -c 'frame_drawn width=' || true)"
+              if (( count >= expected )); then return; fi
+              sleep 2
+            done
+            return 1
+          }
+          trap 'adb logcat -d -s "RNGdleWeb:I" "*:S" > webview.log' EXIT
+          wait_for_frame 1
+          adb exec-out screencap -p > play.png
+          adb shell uiautomator dump /sdcard/navigation.xml
+          adb pull /sdcard/navigation.xml navigation.xml
+          read -r x y < <(python - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          for node in ET.parse("navigation.xml").iter("node"):
+              if "Рейтинг" in (node.get("text"), node.get("content-desc")):
+                  x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
+                  print((x1 + x2) // 2, (y1 + y2) // 2)
+                  break
+          else:
+              raise SystemExit("Rankings tab is absent")
+          PY
+          )
+          adb shell input tap "$x" "$y"
+          wait_for_frame 2
+          adb exec-out screencap -p > rankings.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webview-smoke
+          path: |
+            play.png
+            rankings.png
+            webview.log
+            ${{ runner.temp }}/rngdle-emulator.log

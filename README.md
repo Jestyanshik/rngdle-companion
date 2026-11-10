@@ -32,6 +32,8 @@ RNGdle does not currently publish a Digital Asset Links association for the app.
 
 For WebView diagnostics, filter Logcat on RNGdleWeb. Events contain status codes, dimensions, and state names. URLs, console contents, email addresses, and cookies are omitted.
 
+If the site stays black, enable compatible site rendering in the app's settings. The WebView draws through the Android view hierarchy and uses a software layer when the option is enabled. It keeps the existing site session. The Android workflow can be run manually to capture signed-out game and rankings screens on an API 35 emulator.
+
 ## Reminders
 
 The original site's reset is at 00:00 UTC. Enable notifications in companion settings, optionally choose an advance reminder and hourly repeats. The app checks the visible post-roll countdown while Play is foregrounded to stop repeats for that UTC day. A roll on another device is only detected when Play next displays the result in this app. This status is installation-wide.
