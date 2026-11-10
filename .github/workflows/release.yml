@@ -1,0 +1,70 @@
+name: Signed Android release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Test, lint and build signed APK
+        env:
+          RNGDLE_KEYSTORE_B64: ${{ secrets.RNGDLE_KEYSTORE_B64 }}
+          RNGDLE_KEYSTORE_PASSWORD: ${{ secrets.RNGDLE_KEYSTORE_PASSWORD }}
+          RNGDLE_KEY_ALIAS: ${{ secrets.RNGDLE_KEY_ALIAS }}
+          RNGDLE_KEY_PASSWORD: ${{ secrets.RNGDLE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          export RNGDLE_KEYSTORE="$(mktemp)"
+          trap 'rm -f -- "$RNGDLE_KEYSTORE"' EXIT
+          printf '%s' "${RNGDLE_KEYSTORE_B64:?Missing signing keystore}" | base64 --decode > "$RNGDLE_KEYSTORE"
+          unset RNGDLE_KEYSTORE_B64
+          bash ./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease \
+            -PreleaseRepository="$GITHUB_REPOSITORY"
+      - name: Verify signature and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_CERT: ${{ vars.RNGDLE_CERT_SHA256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          apk="app/build/outputs/apk/release/app-release.apk"
+          signature="$("$tools/apksigner" verify --print-certs "$apk")"
+          signer="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<< "$signature")"
+          expected="$(tr -d ':' <<< "${EXPECTED_CERT:?Missing RNGDLE_CERT_SHA256}")"
+          [[ "${signer,,}" == "${expected,,}" ]]
+          metadata="$("$tools/aapt" dump badging "$apk")"
+          package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<< "$metadata")"
+          code="$(sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p" <<< "$metadata")"
+          version="$(sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p" <<< "$metadata")"
+          [[ "$package" == app.rngdle.companion && "$GITHUB_REF_NAME" == "v$version" && "$code" =~ ^[1-9][0-9]*$ ]]
+          names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .assets[].name')"
+          while IFS= read -r asset; do
+            if [[ "$asset" =~ ^rngdle-companion-vc([1-9][0-9]*)\.apk$ ]]; then
+              (( code > BASH_REMATCH[1] )) || { echo "versionCode must exceed previous public releases"; exit 1; }
+            fi
+          done <<< "$names"
+          destination="$RUNNER_TEMP/rngdle-companion-vc$code.apk"
+          cp "$apk" "$destination"
+          gh release create "$GITHUB_REF_NAME" "$destination" --verify-tag --generate-notes --latest

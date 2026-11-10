@@ -1,0 +1,57 @@
+# RNGdle Companion
+
+An unofficial Android client for [rngdle.com](https://www.rngdle.com/). It opens the original game in an Android WebView and adds bottom navigation, roll reminders and signed APK updates. The site supplies the roll, EP, badges, player data and animations.
+
+See the [research and implementation stages](docs/RNGDLE.md) for the evidence, screen map and authenticated test gaps.
+
+## Build and test
+
+Use JDK 17, Android SDK 35 and Build Tools 35.0.0. Run the following command on Linux or macOS.
+
+```sh
+bash ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+On Windows, use a checkout path with ASCII characters. Gradle's test worker can fail to load test classes when a parent directory contains Cyrillic characters.
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+Install the debug APK from app/build/outputs/apk/debug/app-debug.apk on Android 9 or later. The debug package is app.rngdle.companion.debug. The distribution package is app.rngdle.companion.
+
+## Sign in and play
+
+1. Open Play and use the original site's sign-in form. Complete any challenge presented by RNGdle.
+2. Copy the direct HTTPS magic link from the email. In the app, tap the top-bar sign-in link button and paste the link within five minutes. Opening the email link in another browser creates a separate browser session.
+3. Use Generate on the original page to roll. Browse rankings, friends and profile from the bottom bar. Site Settings are in the original page's menu. Android reminders and updates are in the bottom-bar settings.
+
+The app uses Android's persistent WebView cookie and website storage. The website controls authentication, expiration and sign-out. There is no direct game API client. The native dialog holds the magic link in memory and submits it directly to the first-party site. Android backups are disabled to keep website state local to the installation.
+
+## Reminders
+
+The original site's reset is at 00:00 UTC. Enable notifications in companion settings, optionally choose an advance reminder and hourly repeats. The app checks the visible post-roll countdown while Play is foregrounded to stop repeats for that UTC day. A roll on another device is only detected when Play next displays the result in this app. This status is installation-wide.
+
+WorkManager delivers reminders approximately. Alarm mode uses the system alarm clock for the reset when exact-alarm access is granted, with a delayed WorkManager fallback. Advance and repeat reminders use WorkManager. Notification settings and power policies can affect delivery on Android and HyperOS. On a HyperOS test device, check the app's notification, alarm, battery and autostart settings if the OEM delays delivery. A short synthesized slot-style sound is included. Users can also select an audio file and override channel sounds in Android settings.
+
+## Publish and update
+
+Create one distribution keystore outside the repository and back it up securely. Configure the following Actions secrets in a public GitHub repository.
+
+| Secret | Value |
+| --- | --- |
+| RNGDLE_KEYSTORE_B64 | Base64-encoded bytes of the distribution keystore |
+| RNGDLE_KEYSTORE_PASSWORD | Keystore password |
+| RNGDLE_KEY_ALIAS | Distribution key alias |
+| RNGDLE_KEY_PASSWORD | Distribution key password |
+
+Set the repository variable RNGDLE_CERT_SHA256 to the distribution signing certificate's SHA-256 fingerprint. Use the same signing key and application ID for every release. Increase versionCode and versionName in app/build.gradle.kts, then push a tag matching the versionName, such as v0.1.0. The release workflow verifies the signing certificate and requires versionCode to exceed previous published release assets.
+
+CI embeds the public repository name and publishes one asset named rngdle-companion-vcVERSION_CODE.apk. The app checks the latest stable GitHub Release and displays its notes. It compares the asset's versionCode, checks its GitHub SHA-256 digest and byte count, and validates the package, APK version and signing certificate before opening the Android installer. Android asks the user to approve installation and retains the existing app data when it updates the same package signed with the same key. Debug builds omit self-updates.
+
+## Manual verification
+
+- Sign in on a physical Android device, restart the app, and verify the session survives. Exercise expired links and sign-out.
+- With an authorized account, press Generate once and verify the original result, EP, badges, history, collection and countdown. Check profile edits, friend requests and Party if offered by the site.
+- Exercise offline loading and retry, notification denial, exact-alarm denial, reboot, clock changes, hourly suppression, custom sounds and Android/HyperOS power management.
+- Publish two signed test releases with increasing version codes and use the updater to install the second over the first. Verify that the original account and reminder settings survive.
