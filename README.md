@@ -22,11 +22,15 @@ Install the debug APK from app/build/outputs/apk/debug/app-debug.apk on Android 
 
 ## Sign in and play
 
-1. Open Play and use the original site's sign-in form. Complete any challenge presented by RNGdle.
-2. Copy the direct HTTPS magic link from the email. In the app, tap the top-bar sign-in link button and paste the link within five minutes. Opening the email link in another browser creates a separate browser session.
+1. Tap Sign in in the Android header. This opens RNGdle's original email form inside the app. Enter your email and submit through the site's own Send Magic Link button. Complete any challenge presented by RNGdle.
+2. When the app tells you to check your email, copy the direct HTTPS link from the message before opening it elsewhere. Return to the app and tap Paste link from email. It opens the link in the same WebView and confirms sign-in when the site displays its signed-in profile control. A manual paste dialog is available if Android does not provide a link from the clipboard.
 3. Use Generate on the original page to roll. Browse rankings, friends and profile from the bottom bar. Site Settings are in the original page's menu. Android reminders and updates are in the bottom-bar settings.
 
 The app uses Android's persistent WebView cookie and website storage. The website controls authentication, expiration and sign-out. There is no direct game API client. The native dialog holds the magic link in memory and submits it directly to the first-party site. Android backups are disabled to keep website state local to the installation.
+
+RNGdle does not currently publish a Digital Asset Links association for the app. Email clients can open the link in the system browser, which has separate cookies. Copy the link first so that the app can redeem it inside its own session. The exact callback path and token format remain controlled by RNGdle.
+
+For WebView diagnostics, filter Logcat on RNGdleWeb. Events contain status codes, dimensions, and state names. URLs, console contents, email addresses, and cookies are omitted.
 
 ## Reminders
 

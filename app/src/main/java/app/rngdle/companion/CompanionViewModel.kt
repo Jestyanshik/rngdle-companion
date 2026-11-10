@@ -7,6 +7,7 @@ import app.rngdle.companion.reminder.ReminderPolicy
 import app.rngdle.companion.reminder.ReminderRepository
 import app.rngdle.companion.reminder.ReminderScheduler
 import app.rngdle.companion.reminder.ReminderSettings
+import app.rngdle.companion.site.AuthState
 import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SitePage
 import app.rngdle.companion.update.GitHubReleaseRepository
@@ -29,6 +30,8 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     val page = mutablePage.asStateFlow()
     private val mutableWebState = MutableStateFlow<PageState>(PageState.Loading)
     val webState = mutableWebState.asStateFlow()
+    private val mutableAuth = MutableStateFlow(AuthState.CHECKING)
+    val auth = mutableAuth.asStateFlow()
     private val mutableUpdate = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val update = mutableUpdate.asStateFlow()
     private val mutableReminderError = MutableStateFlow(false)
@@ -42,6 +45,10 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun showPageState(state: PageState) {
         mutableWebState.value = state
+    }
+
+    fun showAuthState(state: AuthState) {
+        mutableAuth.value = state
     }
 
     fun changeReminder(change: (ReminderSettings) -> ReminderSettings) = reminderAction {

@@ -6,6 +6,35 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SiteTest {
+    @Test fun aFinishedButEmptyDocumentStaysLoadingAndCannotOverrideAnError() {
+        assertEquals(PageState.Loading, PageState.Loading.observeContent(false))
+        assertEquals(PageState.Ready, PageState.Loading.observeContent(true))
+        val failed = PageState.Failed(SiteFailure.HTTP)
+        assertEquals(failed, failed.observeContent(true))
+    }
+
+    @Test fun pastedLinkRetainsTheOriginalEncodingAndRejectsExternalLinks() {
+        val original = "https://www.rngdle.com/example?value=a%2Bb%26c#fragment"
+        assertEquals(original, Site.emailLink(" $original\n")?.toASCIIString())
+        assertNull(Site.emailLink("https://www.rngdle.com/"))
+        assertNull(Site.emailLink("https://mail.example.test/?url=$original"))
+        assertNull(Site.emailLink("https://rngdle.com.example.test/example"))
+    }
+
+    @Test fun callbackIsOnlyConfirmedByTheSitesSignedInMarker() {
+        assertEquals(AuthState.COMPLETING, AuthState.COMPLETING.observe(AccountMarker.SIGNED_OUT))
+        assertEquals(AuthState.COMPLETING, AuthState.COMPLETING.observe(AccountMarker.UNKNOWN))
+        assertEquals(AuthState.SIGNED_IN, AuthState.COMPLETING.observe(AccountMarker.SIGNED_IN))
+    }
+
+    @Test fun emailStatusFollowsTheOriginalFormAndSurvivesClosingIt() {
+        assertEquals(AuthState.ENTER_EMAIL, AuthState.OPENING_FORM.observe(AccountMarker.EMAIL_FORM))
+        assertEquals(AuthState.CHECK_MAIL, AuthState.ENTER_EMAIL.observe(AccountMarker.MAIL_SENT))
+        assertEquals(AuthState.CHECK_MAIL, AuthState.CHECK_MAIL.observe(AccountMarker.SIGNED_OUT))
+        assertEquals(AuthState.LINK_FAILED, AuthState.LINK_FAILED.observe(AccountMarker.SIGNED_OUT))
+        assertEquals(AuthState.SIGNED_OUT, AuthState.SIGNED_IN.observe(AccountMarker.SIGNED_OUT))
+    }
+
     @Test fun onlyFirstPartyHttpsUrlsCanEnterTheAccountWebView() {
         assertNotNull(Site.firstParty("https://www.rngdle.com/"))
         assertNotNull(Site.firstParty("https://rngdle.com:443/path"))

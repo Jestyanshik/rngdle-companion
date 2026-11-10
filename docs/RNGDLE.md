@@ -18,6 +18,14 @@ The inspected home resources included the [countdown component](https://www.rngd
 
 The visual reference uses a near-black background, large result digits, a pink-to-purple Generate outline, dark cards and colored badge pills. The native shell uses a matching dark theme and a bottom navigation bar. The first-party page supplies the exact rarity palette, EP cards and reveal effects.
 
+## Android 0.1.1 regression investigation
+
+Version 0.1.0 began navigation before AndroidView attached to the activity. Its page-finished callback treated a loaded document as rendered content and only surfaced selected HTTP failures. Its paste dialog closed when WebView accepted a URL, without observing the result of authentication. These are confirmed code defects. The device-specific rendering symptom still needs an Android reproduction.
+
+A signed-out mobile Chrome session loaded the home, leaderboard, and friends routes. Friends rendered its sign-in gate. The profile route redirected to the home screen. The app's form opener and observer detected the site's original email field and Send Magic Link button. An empty main document stayed in the loading state. No email was requested during the browser check.
+
+Both hosts returned HTTP 404 for the Digital Asset Links file after following the apex redirect to the canonical host. The app uses an explicit clipboard action and preserves the copied HTTPS link's path, query, and fragment. The exact callback format, server cookie issuance, and session survival across a device restart require a live link and an Android test.
+
 ## Implementation stages
 
 1. Establish a single Android WebView for Play, Rankings, Friends and Profile. Keep first-party storage across navigation and process restarts. Compose owns Android navigation, retry states and companion settings.

@@ -2,13 +2,14 @@ package app.rngdle.companion
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.View
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -18,45 +19,36 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -64,7 +56,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import app.rngdle.companion.reminder.ReminderScheduler
+import app.rngdle.companion.site.AuthState
 import app.rngdle.companion.site.PageState
+import app.rngdle.companion.site.SiteFailure
 import app.rngdle.companion.site.SitePage
 import app.rngdle.companion.site.SiteWebView
 import java.io.File
@@ -73,7 +67,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val model: CompanionViewModel by viewModels()
-    private lateinit var web: SiteWebView
+    private var web by mutableStateOf<SiteWebView?>(null)
     private var exactAccess by mutableStateOf(false)
     private var notificationAccess by mutableStateOf(false)
 
@@ -98,8 +92,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        web = SiteWebView(this, model::showPageState, model::selectPage)
-        web.open(model.page.value)
+        createWebView()
         setContent {
             MaterialTheme(colorScheme = companionColors) { CompanionScreen() }
         }
@@ -107,22 +100,54 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        web.onResume()
+        web?.onResume()
         refreshPermissions()
         model.reschedule()
     }
 
     override fun onPause() {
-        web.persistSession()
-        web.onPause()
+        web?.persistSession()
+        web?.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
-        val parent = web.parent as? android.view.ViewGroup
-        parent?.removeView(web)
-        web.destroy()
+        web?.dispose()
         super.onDestroy()
+    }
+
+    private fun createWebView() {
+        model.showPageState(PageState.Loading)
+        val auth = model.auth.value.takeIf { it == AuthState.CHECK_MAIL } ?: AuthState.CHECKING
+        model.showAuthState(auth)
+        web = try {
+            SiteWebView(this, model.page.value, auth, model::showPageState, model::selectPage, model::showAuthState) {
+                if (web === it) web = null
+                it.dispose()
+            }
+        } catch (_: RuntimeException) {
+            Log.w("RNGdleWeb", "creation_failed")
+            model.showPageState(PageState.Failed(SiteFailure.WEBVIEW))
+            null
+        }
+    }
+
+    private fun openPage(destination: SitePage) {
+        model.selectPage(destination)
+        val current = web
+        if (current == null) createWebView() else current.open(destination)
+    }
+
+    private fun retryPage() {
+        val current = web
+        if (current == null) createWebView() else current.retry()
+    }
+
+    private fun pasteEmailLink(): Boolean {
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        val clip = clipboard.primaryClip ?: return false
+        val text = clip.getItemAt(0).text?.toString() ?: return false
+        return web?.openMagicLink(text) == true
     }
 
     private fun refreshPermissions() {
@@ -178,6 +203,7 @@ class MainActivity : ComponentActivity() {
     private fun CompanionScreen() {
         val page by model.page.collectAsStateWithLifecycle()
         val webState by model.webState.collectAsStateWithLifecycle()
+        val auth by model.auth.collectAsStateWithLifecycle()
         val settings by model.reminderSettings.collectAsStateWithLifecycle()
         val update by model.update.collectAsStateWithLifecycle()
         val reminderError by model.reminderError.collectAsStateWithLifecycle()
@@ -187,18 +213,20 @@ class MainActivity : ComponentActivity() {
         val snackbar = remember { SnackbarHostState() }
         val scope = rememberCoroutineScope()
 
-        LaunchedEffect(companionSettings, webState) {
+        LaunchedEffect(companionSettings, web) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                while (!companionSettings) {
-                    canGoBack = web.canGoBack()
-                    if (webState == PageState.Ready) web.readVisibleCountdown(model::observeCountdown)
-                    delay(1_500)
+                while (true) {
+                    val current = web
+                    canGoBack = current?.canNavigateBack() == true
+                    current?.inspectPage()
+                    if (!companionSettings) current?.readVisibleCountdown(model::observeCountdown)
+                    delay(650)
                 }
             }
         }
         BackHandler(companionSettings || canGoBack) {
             if (companionSettings) companionSettings = false
-            else if (web.canGoBack()) web.goBack()
+            else web?.let { if (it.canNavigateBack()) it.goBack() }
         }
 
         Scaffold(
@@ -217,8 +245,8 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 val resumeCurrentPage = companionSettings && page == destination
                                 companionSettings = false
-                                if (!resumeCurrentPage) web.open(destination)
-                                canGoBack = web.canGoBack()
+                                if (!resumeCurrentPage) openPage(destination)
+                                canGoBack = web?.canNavigateBack() == true
                             },
                             icon = { Icon(icon, contentDescription = null) },
                             label = { Text(label, maxLines = 1) },
@@ -233,35 +261,26 @@ class MainActivity : ComponentActivity() {
                 }
             },
         ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
                 if (!companionSettings) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("RNGdle Companion", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                        TextButton(onClick = { loginDialog = true }) { Text("Ссылка для входа") }
-                    }
-                    if (webState == PageState.Loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-                Box(Modifier.fillMaxSize()) {
-                    AndroidView(
-                        factory = { web },
-                        modifier = Modifier.fillMaxSize(),
-                        update = { it.visibility = if (companionSettings || webState in listOf(PageState.Failed, PageState.Offline)) View.INVISIBLE else View.VISIBLE },
+                    SiteAuthBar(
+                        auth = auth,
+                        available = web != null,
+                        onSignIn = { web?.requestLogin() },
+                        onPaste = { if (!pasteEmailLink()) loginDialog = true },
                     )
-                    if (!companionSettings && webState in listOf(PageState.Failed, PageState.Offline)) {
-                        Column(Modifier.align(Alignment.Center).padding(24.dp)) {
-                            Text(
-                                if (webState == PageState.Offline) "Не удалось подключиться к RNGdle"
-                                else "RNGdle временно недоступен",
-                                style = MaterialTheme.typography.titleLarge,
+                }
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    web?.let { current ->
+                        key(current) {
+                            AndroidView(
+                                factory = { current },
+                                modifier = Modifier.matchParentSize(),
+                                update = { view ->
+                                    view.visibility = if (companionSettings) android.view.View.INVISIBLE
+                                    else android.view.View.VISIBLE
+                                },
                             )
-                            Text("Проверьте подключение и повторите попытку.")
-                            Button(onClick = web::retry, modifier = Modifier.padding(top = 12.dp)) { Text("Повторить") }
-                            TextButton(onClick = { SiteWebView.openBrowser(this@MainActivity, Uri.parse(page.url)) }) {
-                                Text("Открыть в браузере")
-                            }
                         }
                     }
                     if (companionSettings) {
@@ -282,6 +301,15 @@ class MainActivity : ComponentActivity() {
                                 installUpdate(apk)?.let { message -> scope.launch { snackbar.showSnackbar(message) } }
                             },
                         )
+                    } else {
+                        SitePageOverlay(
+                            page = page,
+                            pageState = webState,
+                            auth = auth,
+                            onRetry = ::retryPage,
+                            onSignIn = { web?.requestLogin() },
+                            onBrowser = { SiteWebView.openBrowser(this@MainActivity, Uri.parse(page.url)) },
+                        )
                     }
                 }
             }
@@ -290,46 +318,11 @@ class MainActivity : ComponentActivity() {
             MagicLinkDialog(
                 onDismiss = { loginDialog = false },
                 onOpen = { link ->
-                    web.openMagicLink(link).also { accepted -> if (accepted) loginDialog = false }
+                    (web?.openMagicLink(link) == true).also { accepted -> if (accepted) loginDialog = false }
                 },
             )
         }
     }
-}
-
-@Composable
-private fun MagicLinkDialog(onDismiss: () -> Unit, onOpen: (String) -> Boolean) {
-    var link by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf(false) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Вход в RNGdle") },
-        text = {
-            Column {
-                Text("Сначала запросите ссылку через Sign up или Sign in на сайте внутри приложения. Скопируйте прямую ссылку из письма и вставьте её сюда в течение пяти минут.")
-                OutlinedTextField(
-                    value = link,
-                    onValueChange = {
-                        link = it
-                        error = false
-                    },
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                    label = { Text("Ссылка из письма") },
-                    singleLine = true,
-                    isError = error,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    supportingText = if (error) {
-                        { Text("Нужна прямая HTTPS-ссылка на rngdle.com.") }
-                    } else null,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = link.isNotBlank(), onClick = { error = !onOpen(link) }) { Text("Открыть") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
-    )
 }
 
 private val companionColors = darkColorScheme(

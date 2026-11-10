@@ -29,11 +29,34 @@ object Site {
                 it.rawUserInfo == null && it.port in listOf(-1, 443)
         }
     }
+
+    fun emailLink(value: String): URI? = firstParty(value.trim())?.takeIf {
+        it.rawPath !in listOf("", "/") || it.rawQuery != null || it.rawFragment != null
+    }
 }
 
 sealed interface PageState {
     data object Loading : PageState
     data object Ready : PageState
-    data object Offline : PageState
-    data object Failed : PageState
+    data class Failed(val reason: SiteFailure) : PageState
+}
+
+enum class SiteFailure { OFFLINE, HTTP, TLS, TIMEOUT, NAVIGATION, WEBVIEW }
+
+internal fun PageState.observeContent(visibleContent: Boolean): PageState =
+    if (this == PageState.Loading && visibleContent) PageState.Ready else this
+
+enum class AuthState { CHECKING, SIGNED_OUT, OPENING_FORM, ENTER_EMAIL, CHECK_MAIL, COMPLETING, SIGNED_IN, FORM_UNAVAILABLE, LINK_FAILED }
+
+enum class AccountMarker { UNKNOWN, SIGNED_OUT, EMAIL_FORM, MAIL_SENT, SIGNED_IN }
+
+internal fun AuthState.observe(marker: AccountMarker): AuthState = when {
+    marker == AccountMarker.SIGNED_IN -> AuthState.SIGNED_IN
+    this == AuthState.COMPLETING -> this
+    marker == AccountMarker.MAIL_SENT -> AuthState.CHECK_MAIL
+    marker == AccountMarker.EMAIL_FORM -> AuthState.ENTER_EMAIL
+    marker == AccountMarker.SIGNED_OUT && this !in listOf(
+        AuthState.OPENING_FORM, AuthState.CHECK_MAIL, AuthState.FORM_UNAVAILABLE, AuthState.LINK_FAILED,
+    ) -> AuthState.SIGNED_OUT
+    else -> this
 }
