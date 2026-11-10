@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,6 +37,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -100,7 +102,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        val darkBars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = darkBars, navigationBarStyle = darkBars)
         companionSettings = savedInstanceState?.getBoolean("companionSettings") ?: false
         compatibleRendering = getPreferences(MODE_PRIVATE).getBoolean(COMPATIBLE_RENDERING, false)
         setContentView(createLayout())
@@ -159,12 +162,14 @@ class MainActivity : ComponentActivity() {
     private fun createLayout(): View {
         siteHeader = composeView(R.id.site_header) {
             val auth by model.auth.collectAsStateWithLifecycle()
-            SiteAuthBar(
-                auth = auth,
-                available = web != null,
-                onSignIn = { web?.requestLogin() },
-                onPaste = { if (!pasteEmailLink()) loginDialog = true },
-            )
+            Surface(color = MaterialTheme.colorScheme.background) {
+                SiteAuthBar(
+                    auth = auth,
+                    available = web != null,
+                    onSignIn = { web?.requestLogin() },
+                    onPaste = { if (!pasteEmailLink()) loginDialog = true },
+                )
+            }
         }
         siteOverlay = composeView(R.id.site_overlay) { SiteOverlay() }.apply { isClickable = true }
         siteHost = FrameLayout(this).apply {
