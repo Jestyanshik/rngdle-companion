@@ -47,6 +47,8 @@ Create one distribution keystore outside the repository and back it up securely.
 
 Set the repository variable RNGDLE_CERT_SHA256 to the distribution signing certificate's SHA-256 fingerprint. Use the same signing key and application ID for every release. Increase versionCode and versionName in app/build.gradle.kts, then push a tag matching the versionName, such as v0.1.0. The release workflow verifies the signing certificate and requires versionCode to exceed previous published release assets.
 
+If a build fails before publication, run the Signed Android release workflow manually from the default branch and provide the existing release tag.
+
 CI embeds the public repository name and publishes one asset named rngdle-companion-vcVERSION_CODE.apk. The app checks the latest stable GitHub Release and displays its notes. It compares the asset's versionCode, checks its GitHub SHA-256 digest and byte count, and validates the package, APK version and signing certificate before opening the Android installer. Android asks the user to approve installation and retains the existing app data when it updates the same package signed with the same key. Debug builds omit self-updates.
 
 ## Manual verification

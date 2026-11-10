@@ -3,6 +3,12 @@ name: Signed Android release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag for a release that has not been published
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -13,17 +19,20 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v6
+      - run: test -f "$ANDROID_HOME/platforms/android-35/android.jar" && test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
       - name: Test, lint and build signed APK
         env:
           RNGDLE_KEYSTORE_B64: ${{ secrets.RNGDLE_KEYSTORE_B64 }}
@@ -57,7 +66,7 @@ jobs:
           package="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<< "$metadata")"
           code="$(sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p" <<< "$metadata")"
           version="$(sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p" <<< "$metadata")"
-          [[ "$package" == app.rngdle.companion && "$GITHUB_REF_NAME" == "v$version" && "$code" =~ ^[1-9][0-9]*$ ]]
+          [[ "$package" == app.rngdle.companion && "$RELEASE_TAG" == "v$version" && "$code" =~ ^[1-9][0-9]*$ ]]
           names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[] | select(.draft == false and .prerelease == false) | .assets[].name')"
           while IFS= read -r asset; do
@@ -67,4 +76,4 @@ jobs:
           done <<< "$names"
           destination="$RUNNER_TEMP/rngdle-companion-vc$code.apk"
           cp "$apk" "$destination"
-          gh release create "$GITHUB_REF_NAME" "$destination" --verify-tag --generate-notes --latest
+          gh release create "$RELEASE_TAG" "$destination" --verify-tag --generate-notes --latest
