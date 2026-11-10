@@ -43,6 +43,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo chmod a+rw /dev/kvm
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          printf '%s\n' "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           sdkmanager="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -print -quit)"
           image='system-images;android-35;google_apis;x86_64'
           "$sdkmanager" 'emulator' "$image"
