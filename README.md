@@ -36,9 +36,9 @@ If the site stays black, enable compatible site rendering in the app's settings.
 
 ## Reminders
 
-The original site's reset is at 00:00 UTC. Enable notifications in companion settings, optionally choose an advance reminder and hourly repeats. The app checks the visible post-roll countdown while Play is foregrounded to stop repeats for that UTC day. A roll on another device is only detected when Play next displays the result in this app. This status is installation-wide.
+After the original Play page shows its post-roll countdown, the app saves the next reset at 00:00 UTC and schedules one notification. A roll made elsewhere can be detected when its result and countdown appear in the app.
 
-WorkManager delivers reminders approximately. Alarm mode uses the system alarm clock for the reset when exact-alarm access is granted, with a delayed WorkManager fallback. Advance and repeat reminders use WorkManager. Notification settings and power policies can affect delivery on Android and HyperOS. On a HyperOS test device, check the app's notification, alarm, battery and autostart settings if the OEM delays delivery. A short synthesized slot-style sound is included. Users can also select an audio file and override channel sounds in Android settings.
+The notification uses a short slot-style chime. The Alarm switch selects a longer melody and uses the system alarm clock when Android grants exact-alarm access. Android can defer delivery when exact access is unavailable. WorkManager provides a delayed backup and the app restores a pending reminder after reboot.
 
 ## Publish and update
 
@@ -61,5 +61,5 @@ CI embeds the public repository name and publishes one asset named rngdle-compan
 
 - Sign in on a physical Android device, restart the app, and verify the session survives. Exercise expired links and sign-out.
 - With an authorized account, press Generate once and verify the original result, EP, badges, history, collection and countdown. Check profile edits, friend requests and Party if offered by the site.
-- Exercise offline loading and retry, notification denial, exact-alarm denial, reboot, clock changes, hourly suppression, custom sounds and Android/HyperOS power management.
+- Exercise offline loading and retry, notification denial, exact-alarm denial, reboot, clock changes, and Android or HyperOS power management. Verify one post-roll notification and the chime and alarm melody in their respective modes.
 - Publish two signed test releases with increasing version codes and use the updater to install the second over the first. Verify that the original account and reminder settings survive.

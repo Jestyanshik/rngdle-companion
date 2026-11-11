@@ -15,7 +15,6 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -87,17 +86,6 @@ class MainActivity : ComponentActivity() {
     ) {
         refreshPermissions()
         model.reschedule()
-    }
-
-    private val soundPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { sound ->
-        if (sound != null) {
-            try {
-                contentResolver.takePersistableUriPermission(sound, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                model.changeReminder { it.copy(sound = sound.toString()) }
-            } catch (_: SecurityException) {
-                Toast.makeText(this, "Android не предоставил постоянный доступ к этому файлу.", Toast.LENGTH_LONG).show()
-            }
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -264,6 +252,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun onCountdown(value: String) {
+        if (model.observeCountdown(value) && Build.VERSION.SDK_INT >= 33 && !notificationAccess &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            !getPreferences(MODE_PRIVATE).getBoolean("asked_notifications", false)
+        ) requestNotifications()
+    }
+
     private fun openSettings(intent: Intent): Boolean = try {
         startActivity(intent)
         true
@@ -298,7 +293,7 @@ class MainActivity : ComponentActivity() {
                     val current = web
                     canGoBack = current?.canNavigateBack() == true
                     current?.inspectPage()
-                    if (!companionSettings) current?.readVisibleCountdown(model::observeCountdown)
+                    if (!companionSettings) current?.readVisibleCountdown(::onCountdown)
                     delay(650)
                 }
             }
@@ -350,7 +345,7 @@ class MainActivity : ComponentActivity() {
         val page by model.page.collectAsStateWithLifecycle()
         val webState by model.webState.collectAsStateWithLifecycle()
         val auth by model.auth.collectAsStateWithLifecycle()
-        val settings by model.reminderSettings.collectAsStateWithLifecycle()
+        val alarmMode by model.alarmMode.collectAsStateWithLifecycle()
         val update by model.update.collectAsStateWithLifecycle()
         val reminderError by model.reminderError.collectAsStateWithLifecycle()
         if (companionSettings) {
@@ -358,7 +353,7 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             Box(Modifier.fillMaxSize()) {
                 SettingsScreen(
-                    settings = settings,
+                    alarmMode = alarmMode,
                     reminderError = reminderError,
                     notificationAccess = notificationAccess,
                     exactAccess = exactAccess,
@@ -366,10 +361,12 @@ class MainActivity : ComponentActivity() {
                     updateConfigured = model.updateConfigured,
                     compatibleRendering = compatibleRendering,
                     onRenderingChange = ::changeRendering,
-                    onChange = { model.changeReminder(it) },
+                    onAlarmModeChange = { enabled ->
+                        model.setAlarmMode(enabled)
+                        if (enabled && !exactAccess) requestExactAlarm()
+                    },
                     onNotificationAccess = ::requestNotifications,
                     onExactAccess = ::requestExactAlarm,
-                    onSound = { soundPicker.launch(arrayOf("audio/*")) },
                     onCheck = model::checkUpdates,
                     onDownload = model::downloadUpdate,
                     onInstall = { apk ->

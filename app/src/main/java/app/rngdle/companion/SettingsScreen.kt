@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -17,18 +16,16 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import app.rngdle.companion.reminder.ReminderSettings
 import app.rngdle.companion.update.Release
 import java.io.File
 
 @Composable
 internal fun SettingsScreen(
-    settings: ReminderSettings,
+    alarmMode: Boolean,
     reminderError: Boolean,
     notificationAccess: Boolean,
     exactAccess: Boolean,
@@ -36,10 +33,9 @@ internal fun SettingsScreen(
     updateConfigured: Boolean,
     compatibleRendering: Boolean,
     onRenderingChange: (Boolean) -> Unit,
-    onChange: ((ReminderSettings) -> ReminderSettings) -> Unit,
+    onAlarmModeChange: (Boolean) -> Unit,
     onNotificationAccess: () -> Unit,
     onExactAccess: () -> Unit,
-    onSound: () -> Unit,
     onCheck: () -> Unit,
     onDownload: (Release) -> Unit,
     onInstall: (File) -> Unit,
@@ -54,44 +50,13 @@ internal fun SettingsScreen(
             Text("Включите, если вкладки сайта отображаются чёрными.")
             HorizontalDivider()
             Text("Напоминания", style = MaterialTheme.typography.titleLarge)
-            Text("Новый игровой день начинается в 00:00 UTC.")
-            SettingSwitch("Уведомлять о сбросе", settings.enabled) { enabled ->
-                onChange { it.copy(enabled = enabled) }
+            Text("После ролла придёт одно уведомление, когда снова можно играть.")
+            SettingSwitch("Будильник", alarmMode, onAlarmModeChange)
+            if (!notificationAccess) {
+                OutlinedButton(onClick = onNotificationAccess) { Text("Разрешить уведомления Android") }
             }
-            if (settings.enabled) {
-                if (!notificationAccess) {
-                    OutlinedButton(onClick = onNotificationAccess) { Text("Разрешить уведомления") }
-                }
-                Text("Предварительное напоминание")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((minutes, title) in listOf(0 to "Нет", 5 to "5 мин", 15 to "15 мин", 30 to "30 мин")) {
-                        FilterChip(
-                            selected = minutes == settings.advanceMinutes,
-                            onClick = { onChange { it.copy(advanceMinutes = minutes) } },
-                            label = { Text(title) },
-                        )
-                    }
-                }
-                SettingSwitch("Повторять каждый час", settings.repeat) { repeat ->
-                    onChange { it.copy(repeat = repeat) }
-                }
-                if (settings.repeat) {
-                    Text("Повторы прекращаются, когда в приложении появляется таймер после ролла.")
-                }
-                SettingSwitch("Режим будильника", settings.alarmMode) { enabled ->
-                    onChange { it.copy(alarmMode = enabled) }
-                }
-                if (settings.alarmMode && !exactAccess) {
-                    Text("Без специального доступа уведомление может прийти позже.")
-                    OutlinedButton(onClick = onExactAccess) { Text("Разрешить точный будильник") }
-                }
-                Text(if (settings.sound == null) "Звук игры" else "Выбран пользовательский звук")
-                Row {
-                    OutlinedButton(onClick = onSound) { Text("Выбрать звук") }
-                    if (settings.sound != null) {
-                        TextButton(onClick = { onChange { it.copy(sound = null) } }) { Text("Сбросить") }
-                    }
-                }
+            if (alarmMode && !exactAccess) {
+                OutlinedButton(onClick = onExactAccess) { Text("Разрешить точный будильник Android") }
             }
             if (reminderError) Text("Не удалось сохранить или запланировать напоминание.", color = MaterialTheme.colorScheme.error)
             HorizontalDivider()

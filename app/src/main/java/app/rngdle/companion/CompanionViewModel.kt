@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import app.rngdle.companion.reminder.ReminderPolicy
 import app.rngdle.companion.reminder.ReminderRepository
 import app.rngdle.companion.reminder.ReminderScheduler
-import app.rngdle.companion.reminder.ReminderSettings
 import app.rngdle.companion.site.AuthState
 import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SitePage
@@ -24,7 +23,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     private val reminders = ReminderRepository(application)
     private val scheduler = ReminderScheduler(application)
     private val releases = GitHubReleaseRepository(application)
-    private var seenDay: Long? = null
+    private var seenReset: Instant? = null
 
     private val mutablePage = MutableStateFlow(SitePage.PLAY)
     val page = mutablePage.asStateFlow()
@@ -37,7 +36,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     private val mutableReminderError = MutableStateFlow(false)
     val reminderError = mutableReminderError.asStateFlow()
     val updateConfigured = releases.configured
-    val reminderSettings = reminders.settings.stateIn(viewModelScope, SharingStarted.Eagerly, ReminderSettings())
+    val alarmMode = reminders.alarmMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun selectPage(page: SitePage) {
         mutablePage.value = page
@@ -51,9 +50,8 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         mutableAuth.value = state
     }
 
-    fun changeReminder(change: (ReminderSettings) -> ReminderSettings) = reminderAction {
-        reminders.change(change)
-        if (!reminders.snapshot().first.enabled) scheduler.clearNotification()
+    fun setAlarmMode(enabled: Boolean) = reminderAction {
+        reminders.setAlarmMode(enabled)
         scheduler.schedule()
     }
 
@@ -71,20 +69,20 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun observeCountdown(value: String) {
-        val now = Instant.now()
-        val day = ReminderPolicy.day(now)
-        if (seenDay == day || !ReminderPolicy.matchesCountdown(value, now)) return
-        seenDay = day
+    fun observeCountdown(value: String): Boolean {
+        val reset = ReminderPolicy.confirmedReset(value, Instant.now()) ?: return false
+        if (seenReset == reset) return false
+        seenReset = reset
         reminderAction {
             try {
-                reminders.observeRoll(day)
+                if (reminders.recordReset(reset)) scheduler.clearNotification()
+                scheduler.schedule()
             } catch (error: Exception) {
-                seenDay = null
+                if (seenReset == reset) seenReset = null
                 throw error
             }
-            scheduler.clearNotification()
         }
+        return true
     }
 
     fun checkUpdates() {
