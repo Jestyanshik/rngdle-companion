@@ -4,57 +4,100 @@ import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.time.Instant
-import kotlinx.coroutines.flow.first
+import java.time.LocalDate
+import java.time.ZoneId
+import kotlin.random.Random
 import kotlinx.coroutines.flow.map
 
 private val Context.reminderStore by preferencesDataStore("reminders")
 
-internal data class RollReminder(val resetAt: Instant, val alarmMode: Boolean)
+internal data class RollReminder(val at: Instant, val alarmMode: Boolean)
 
 class ReminderRepository(context: Context) {
     private val store = context.applicationContext.reminderStore
     private val alarm = booleanPreferencesKey("alarm")
-    private val reset = longPreferencesKey("next_roll_at")
-    private val delivered = longPreferencesKey("delivered_RESET")
-    private val observedRollDay = longPreferencesKey("observed_roll_day")
+    private val count = intPreferencesKey("daily_reminder_count")
+    private val seed = longPreferencesKey("daily_reminder_seed")
+    private val pendingAt = longPreferencesKey("daily_reminder_pending_at")
+    private val rolledDay = longPreferencesKey("observed_roll_day")
+    private val legacyReset = longPreferencesKey("next_roll_at")
+    private val deliveryDay = longPreferencesKey("daily_reminder_delivery_day")
+    private val deliveredCount = intPreferencesKey("daily_reminder_delivered_count")
+    private val lastDelivery = longPreferencesKey("daily_reminder_last_delivery")
 
-    val alarmMode = store.data.map { it[alarm] ?: false }
+    val options = store.data.map(::optionsFrom)
 
     suspend fun setAlarmMode(enabled: Boolean) {
         store.edit { it[alarm] = enabled }
     }
 
-    suspend fun recordReset(at: Instant): Boolean {
-        var changed = false
+    suspend fun adjustCount(delta: Int) {
+        store.edit { it[count] = (optionsFrom(it).count + delta).coerceIn(0, ReminderOptions.MAX_COUNT) }
+    }
+
+    internal suspend fun recordRoll(day: Long) {
+        store.edit { if ((lastRollDay(it) ?: Long.MIN_VALUE) < day) it[rolledDay] = day }
+    }
+
+    internal suspend fun plan(now: Instant, zone: ZoneId): RollReminder? {
+        var reminder: RollReminder? = null
         store.edit { data ->
-            if (data[reset] == at.epochSecond) return@edit
-            data[reset] = at.epochSecond
-            changed = true
+            val options = optionsFrom(data)
+            val randomSeed = data[seed] ?: Random.nextLong().also { data[seed] = it }
+            val schedule = scheduleFrom(data, options, randomSeed)
+            val pending = data[pendingAt]?.let(Instant::ofEpochSecond)
+            val at = pending?.takeIf {
+                if (it > now) schedule.contains(it, zone) else schedule.canDeliver(it, now, zone)
+            } ?: schedule.next(now, zone)
+            if (at == null) data.remove(pendingAt)
+            else {
+                data[pendingAt] = at.epochSecond
+                reminder = RollReminder(at, options.alarmMode)
+            }
         }
-        return changed
+        return reminder
     }
 
-    internal suspend fun pending(): RollReminder? = pending(store.data.first())
-
-    internal suspend fun claim(at: Instant): RollReminder? {
-        var claimed: RollReminder? = null
+    internal suspend fun consume(at: Instant, now: Instant, zone: ZoneId, permitted: Boolean): RollReminder? {
+        var reminder: RollReminder? = null
         store.edit { data ->
-            val reminder = pending(data)?.takeIf { it.resetAt == at } ?: return@edit
-            data[delivered] = at.epochSecond
-            claimed = reminder
+            if (data[pendingAt] != at.epochSecond || at > now) return@edit
+            data.remove(pendingAt)
+            val randomSeed = data[seed] ?: return@edit
+            val options = optionsFrom(data)
+            if (!permitted || !scheduleFrom(data, options, randomSeed).canDeliver(at, now, zone)) return@edit
+
+            val today = now.atZone(zone).toLocalDate().toEpochDay()
+            val sent = if (data[deliveryDay] == today) data[deliveredCount] ?: 0 else 0
+            data[deliveryDay] = today
+            data[deliveredCount] = sent + 1
+            data[lastDelivery] = at.epochSecond
+            reminder = RollReminder(at, options.alarmMode)
         }
-        return claimed
+        return reminder
     }
 
-    private fun pending(data: Preferences): RollReminder? {
-        // Older versions stored the UTC day of the last confirmed roll.
-        val at = data[reset]?.let(Instant::ofEpochSecond)
-            ?: data[observedRollDay]?.let(ReminderPolicy::resetAfterDay)
-            ?: return null
-        if ((data[delivered] ?: Long.MIN_VALUE) >= at.epochSecond) return null
-        return RollReminder(at, data[alarm] ?: false)
-    }
+    private fun optionsFrom(data: Preferences) = ReminderOptions(
+        count = (data[count] ?: ReminderOptions().count).coerceIn(0, ReminderOptions.MAX_COUNT),
+        alarmMode = data[alarm] ?: false,
+    )
+
+    private fun lastRollDay(data: Preferences): Long? = listOfNotNull(
+        data[rolledDay],
+        // Version 0.1.3 stored the reset following the observed roll.
+        data[legacyReset]?.let { ReminderPolicy.day(Instant.ofEpochSecond(it).minusSeconds(1)) },
+    ).maxOrNull()
+
+    private fun scheduleFrom(data: Preferences, options: ReminderOptions, randomSeed: Long) = DailySchedule(
+        count = options.count,
+        seed = randomSeed,
+        rolledDay = lastRollDay(data),
+        deliveryDate = data[deliveryDay]?.let(LocalDate::ofEpochDay),
+        deliveredCount = data[deliveredCount] ?: 0,
+        lastDelivery = data[lastDelivery]?.let(Instant::ofEpochSecond),
+    )
 }

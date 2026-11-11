@@ -59,6 +59,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import app.rngdle.companion.reminder.ReminderScheduler
+import app.rngdle.companion.reminder.ReminderOptions
 import app.rngdle.companion.site.AuthState
 import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SiteFailure
@@ -252,13 +253,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun onCountdown(value: String) {
-        if (model.observeCountdown(value) && Build.VERSION.SDK_INT >= 33 && !notificationAccess &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-            !getPreferences(MODE_PRIVATE).getBoolean("asked_notifications", false)
-        ) requestNotifications()
-    }
-
     private fun openSettings(intent: Intent): Boolean = try {
         startActivity(intent)
         true
@@ -285,7 +279,16 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun NavigationAndLogin() {
         val page by model.page.collectAsStateWithLifecycle()
+        val reminderOptions by model.reminderOptions.collectAsStateWithLifecycle()
         var canGoBack by remember { mutableStateOf(false) }
+
+        LaunchedEffect(reminderOptions?.count, notificationAccess) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                if ((reminderOptions?.count ?: 0) > 0 && Build.VERSION.SDK_INT >= 33 && !notificationAccess &&
+                    !getPreferences(MODE_PRIVATE).getBoolean("asked_notifications", false)
+                ) requestNotifications()
+            }
+        }
 
         LaunchedEffect(companionSettings, web) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -293,7 +296,7 @@ class MainActivity : ComponentActivity() {
                     val current = web
                     canGoBack = current?.canNavigateBack() == true
                     current?.inspectPage()
-                    if (!companionSettings) current?.readVisibleCountdown(::onCountdown)
+                    if (!companionSettings) current?.readVisibleCountdown(model::observeCountdown)
                     delay(650)
                 }
             }
@@ -345,7 +348,8 @@ class MainActivity : ComponentActivity() {
         val page by model.page.collectAsStateWithLifecycle()
         val webState by model.webState.collectAsStateWithLifecycle()
         val auth by model.auth.collectAsStateWithLifecycle()
-        val alarmMode by model.alarmMode.collectAsStateWithLifecycle()
+        val savedOptions by model.reminderOptions.collectAsStateWithLifecycle()
+        val reminderOptions = savedOptions ?: ReminderOptions()
         val update by model.update.collectAsStateWithLifecycle()
         val reminderError by model.reminderError.collectAsStateWithLifecycle()
         if (companionSettings) {
@@ -353,7 +357,7 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             Box(Modifier.fillMaxSize()) {
                 SettingsScreen(
-                    alarmMode = alarmMode,
+                    reminderOptions = reminderOptions,
                     reminderError = reminderError,
                     notificationAccess = notificationAccess,
                     exactAccess = exactAccess,
@@ -361,9 +365,10 @@ class MainActivity : ComponentActivity() {
                     updateConfigured = model.updateConfigured,
                     compatibleRendering = compatibleRendering,
                     onRenderingChange = ::changeRendering,
+                    onReminderCountChange = model::adjustReminderCount,
                     onAlarmModeChange = { enabled ->
                         model.setAlarmMode(enabled)
-                        if (enabled && !exactAccess) requestExactAlarm()
+                        if (enabled && reminderOptions.count > 0 && !exactAccess) requestExactAlarm()
                     },
                     onNotificationAccess = ::requestNotifications,
                     onExactAccess = ::requestExactAlarm,

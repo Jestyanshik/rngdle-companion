@@ -25,6 +25,7 @@ import app.rngdle.companion.MainActivity
 import app.rngdle.companion.R
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -42,51 +43,70 @@ class ReminderScheduler(private val context: Context) {
         Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()
 
     suspend fun schedule() = withContext(Dispatchers.IO) {
+        scheduleLock.withLock { scheduleNext() }
+    }
+
+    suspend fun recordRoll(day: Long) = withContext(Dispatchers.IO) {
         scheduleLock.withLock {
-            val now = Instant.now()
-            val reminder = repository.pending()?.takeIf { ReminderPolicy.isCurrent(it.resetAt, now) }
-            if (reminder == null || reminder.resetAt <= now) {
-                alarmIntent(null)?.let(alarms::cancel)
-                if (reminder != null) deliver(reminder.resetAt)
-                return@withLock
-            }
-
-            val trigger = reminder.resetAt.toEpochMilli()
-            val operation = checkNotNull(alarmIntent(reminder.resetAt))
-            val exactScheduled = if (hasExactAccess()) {
-                try {
-                    if (reminder.alarmMode) {
-                        alarms.setAlarmClock(AlarmManager.AlarmClockInfo(trigger, openApp()), operation)
-                    } else {
-                        alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, operation)
-                    }
-                    true
-                } catch (_: SecurityException) {
-                    false
-                }
-            } else false
-            if (!exactScheduled) alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, operation)
-
-            // WorkManager still covers a pending reminder if Android removes its alarm.
-            val delay = Duration.between(now, reminder.resetAt.plusSeconds(600)).toMillis()
-            val backup = OneTimeWorkRequestBuilder<ReminderWorker>()
-                .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-                .setInputData(Data.Builder().putLong(RESET_AT, reminder.resetAt.epochSecond).build())
-                .build()
-            WorkManager.getInstance(context)
-                .enqueueUniqueWork("roll-reset-${reminder.resetAt.epochSecond}", ExistingWorkPolicy.KEEP, backup)
-                .result.get()
+            repository.recordRoll(day)
+            context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+            scheduleNext()
         }
     }
 
-    suspend fun deliver(at: Instant) {
-        if (!ReminderPolicy.canDeliver(at, Instant.now())) return
+    suspend fun deliver(at: Instant) = withContext(Dispatchers.IO) {
+        scheduleLock.withLock {
+            postIfDue(at, Instant.now(), ZoneId.systemDefault())
+            scheduleNext()
+        }
+    }
+
+    private suspend fun scheduleNext() {
+        var now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        var reminder = repository.plan(now, zone)
+        if (reminder != null && reminder.at <= now) {
+            postIfDue(reminder.at, now, zone)
+            now = Instant.now()
+            reminder = repository.plan(now, zone)
+        }
+        if (reminder == null) {
+            alarmIntent(null)?.let(alarms::cancel)
+            return
+        }
+        val trigger = reminder.at.toEpochMilli()
+        val operation = checkNotNull(alarmIntent(reminder.at))
+        val exactScheduled = if (hasExactAccess()) {
+            try {
+                if (reminder.alarmMode) {
+                    alarms.setAlarmClock(AlarmManager.AlarmClockInfo(trigger, openApp()), operation)
+                } else {
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, operation)
+                }
+                true
+            } catch (_: SecurityException) {
+                false
+            }
+        } else false
+        if (!exactScheduled) alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, operation)
+
+        // WorkManager covers the selected slot if Android removes its alarm.
+        val delay = Duration.between(now, reminder.at.plusSeconds(600)).toMillis().coerceAtLeast(0)
+        val backup = OneTimeWorkRequestBuilder<ReminderWorker>()
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .setInputData(Data.Builder().putLong(REMINDER_AT, reminder.at.epochSecond).build())
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork("daily-roll-${reminder.at.epochSecond}", ExistingWorkPolicy.KEEP, backup)
+            .result.get()
+    }
+
+    private suspend fun postIfDue(at: Instant, now: Instant, zone: ZoneId) {
         val manager = context.getSystemService(NotificationManager::class.java)
         val permitted = Build.VERSION.SDK_INT < 33 ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
-        if (!permitted || !manager.areNotificationsEnabled()) return
-        val reminder = repository.claim(at) ?: return
+        val reminder = repository.consume(at, now, zone, permitted && manager.areNotificationsEnabled()) ?: return
         post(manager, reminder.alarmMode)
     }
 
@@ -110,17 +130,13 @@ class ReminderScheduler(private val context: Context) {
         manager.createNotificationChannel(channel)
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Ролл RNGdle доступен")
-            .setContentText("Откройте игру, чтобы прокрутить снова.")
+            .setContentTitle("Пора прокрутить RNGdle")
+            .setContentText("Откройте игру, чтобы сделать дневной ролл.")
             .setContentIntent(openApp())
             .setCategory(if (alarm) Notification.CATEGORY_ALARM else Notification.CATEGORY_REMINDER)
             .setAutoCancel(true)
             .build()
         manager.notify(NOTIFICATION_ID, notification)
-    }
-
-    fun clearNotification() {
-        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(
@@ -130,14 +146,14 @@ class ReminderScheduler(private val context: Context) {
 
     private fun alarmIntent(at: Instant?): PendingIntent? {
         val intent = Intent(context, ReminderReceiver::class.java).setAction(ALARM_ACTION)
-        if (at != null) intent.putExtra(RESET_AT, at.epochSecond)
+        if (at != null) intent.putExtra(REMINDER_AT, at.epochSecond)
         val flags = if (at == null) PendingIntent.FLAG_NO_CREATE else PendingIntent.FLAG_UPDATE_CURRENT
         return PendingIntent.getBroadcast(context, 2, intent, PendingIntent.FLAG_IMMUTABLE or flags)
     }
 
     companion object {
         internal const val ALARM_ACTION = "app.rngdle.companion.RESET_ALARM"
-        internal const val RESET_AT = "confirmed_reset_at"
+        internal const val REMINDER_AT = "daily_reminder_at"
         private const val NOTIFICATION_ID = 27
         private val scheduleLock = Mutex()
     }
@@ -146,7 +162,7 @@ class ReminderScheduler(private val context: Context) {
 class ReminderWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = try {
         val scheduler = ReminderScheduler(applicationContext)
-        val time = inputData.getLong(ReminderScheduler.RESET_AT, 0)
+        val time = inputData.getLong(ReminderScheduler.REMINDER_AT, 0)
         if (time == 0L) {
             scheduler.schedule()
             Result.success()
@@ -166,7 +182,7 @@ class ReminderWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val time = intent.getLongExtra(ReminderScheduler.RESET_AT, 0)
+        val time = intent.getLongExtra(ReminderScheduler.REMINDER_AT, 0)
         if (intent.action != ReminderScheduler.ALARM_ACTION || time == 0L) {
             WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<ReminderWorker>().build())
             return

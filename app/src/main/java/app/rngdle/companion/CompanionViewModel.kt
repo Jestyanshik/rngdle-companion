@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.rngdle.companion.reminder.ReminderPolicy
+import app.rngdle.companion.reminder.ReminderOptions
 import app.rngdle.companion.reminder.ReminderRepository
 import app.rngdle.companion.reminder.ReminderScheduler
 import app.rngdle.companion.site.AuthState
@@ -23,7 +24,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     private val reminders = ReminderRepository(application)
     private val scheduler = ReminderScheduler(application)
     private val releases = GitHubReleaseRepository(application)
-    private var seenReset: Instant? = null
+    private var observedRollDay: Long? = null
 
     private val mutablePage = MutableStateFlow(SitePage.PLAY)
     val page = mutablePage.asStateFlow()
@@ -36,7 +37,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     private val mutableReminderError = MutableStateFlow(false)
     val reminderError = mutableReminderError.asStateFlow()
     val updateConfigured = releases.configured
-    val alarmMode = reminders.alarmMode.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    val reminderOptions = reminders.options.stateIn<ReminderOptions?>(viewModelScope, SharingStarted.Eagerly, null)
 
     fun selectPage(page: SitePage) {
         mutablePage.value = page
@@ -55,6 +56,11 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         scheduler.schedule()
     }
 
+    fun adjustReminderCount(delta: Int) = reminderAction {
+        reminders.adjustCount(delta)
+        scheduler.schedule()
+    }
+
     fun reschedule() = reminderAction { scheduler.schedule() }
 
     private fun reminderAction(action: suspend () -> Unit) {
@@ -69,20 +75,18 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun observeCountdown(value: String): Boolean {
-        val reset = ReminderPolicy.confirmedReset(value, Instant.now()) ?: return false
-        if (seenReset == reset) return false
-        seenReset = reset
+    fun observeCountdown(value: String) {
+        val day = ReminderPolicy.confirmedRollDay(value, Instant.now()) ?: return
+        if (observedRollDay == day) return
+        observedRollDay = day
         reminderAction {
             try {
-                if (reminders.recordReset(reset)) scheduler.clearNotification()
-                scheduler.schedule()
+                scheduler.recordRoll(day)
             } catch (error: Exception) {
-                if (seenReset == reset) seenReset = null
+                if (observedRollDay == day) observedRollDay = null
                 throw error
             }
         }
-        return true
     }
 
     fun checkUpdates() {

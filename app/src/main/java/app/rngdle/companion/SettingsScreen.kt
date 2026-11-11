@@ -16,16 +16,20 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import app.rngdle.companion.reminder.ReminderOptions
 import app.rngdle.companion.update.Release
 import java.io.File
 
 @Composable
 internal fun SettingsScreen(
-    alarmMode: Boolean,
+    reminderOptions: ReminderOptions,
     reminderError: Boolean,
     notificationAccess: Boolean,
     exactAccess: Boolean,
@@ -33,6 +37,7 @@ internal fun SettingsScreen(
     updateConfigured: Boolean,
     compatibleRendering: Boolean,
     onRenderingChange: (Boolean) -> Unit,
+    onReminderCountChange: (Int) -> Unit,
     onAlarmModeChange: (Boolean) -> Unit,
     onNotificationAccess: () -> Unit,
     onExactAccess: () -> Unit,
@@ -50,12 +55,27 @@ internal fun SettingsScreen(
             Text("Включите, если вкладки сайта отображаются чёрными.")
             HorizontalDivider()
             Text("Напоминания", style = MaterialTheme.typography.titleLarge)
-            Text("После ролла придёт одно уведомление, когда снова можно играть.")
-            SettingSwitch("Будильник", alarmMode, onAlarmModeChange)
-            if (!notificationAccess) {
+            Text("В случайное время с 08:00 до полуночи по времени телефона. После ролла напоминания за игровой день отменяются.")
+            val count = reminderOptions.count
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Напоминаний в день", Modifier.weight(1f))
+                TextButton(
+                    enabled = count > 0,
+                    onClick = { onReminderCountChange(-1) },
+                    modifier = Modifier.semantics { contentDescription = "Уменьшить число напоминаний" },
+                ) { Text("−") }
+                Text(count.toString())
+                TextButton(
+                    enabled = count < ReminderOptions.MAX_COUNT,
+                    onClick = { onReminderCountChange(1) },
+                    modifier = Modifier.semantics { contentDescription = "Увеличить число напоминаний" },
+                ) { Text("+") }
+            }
+            SettingSwitch("Будильник", reminderOptions.alarmMode, onAlarmModeChange)
+            if (count > 0 && !notificationAccess) {
                 OutlinedButton(onClick = onNotificationAccess) { Text("Разрешить уведомления Android") }
             }
-            if (alarmMode && !exactAccess) {
+            if (count > 0 && reminderOptions.alarmMode && !exactAccess) {
                 OutlinedButton(onClick = onExactAccess) { Text("Разрешить точный будильник Android") }
             }
             if (reminderError) Text("Не удалось сохранить или запланировать напоминание.", color = MaterialTheme.colorScheme.error)

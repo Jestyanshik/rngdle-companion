@@ -1,6 +1,10 @@
 package app.rngdle.companion.reminder
 
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZoneOffset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,35 +12,61 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReminderPolicyTest {
-    @Test fun postRollCountdownConfirmsTheNextUtcMidnight() {
-        val now = Instant.parse("2026-11-11T15:00:00+03:00")
-        assertEquals(Instant.parse("2026-11-12T00:00:00Z"), ReminderPolicy.confirmedReset("12h 00m 00s", now))
+    private val date = LocalDate.of(2026, 11, 11)
+    private val moscow = ZoneId.of("Europe/Moscow")
+    private val schedule = DailySchedule(count = 8, seed = 42, rolledDay = null, deliveryDate = null, deliveredCount = 0)
+
+    @Test fun countIsSpreadAcrossTheLocalWindowAndStableForEachDate() {
+        val slots = schedule.slots(date, moscow)
+        val start = date.atTime(8, 0).atZone(moscow).toInstant()
+        assertEquals(8, slots.size)
+        slots.forEachIndexed { index, at ->
+            val fromStart = Duration.between(start, at).seconds
+            assertTrue(fromStart in (index * 7200L + 1800)..(index * 7200L + 5399))
+        }
+        assertTrue(slots.zipWithNext().all { (first, second) -> Duration.between(first, second).toHours() >= 1 })
+        assertEquals(slots, schedule.slots(date, moscow))
     }
 
-    @Test fun resetIsNotAFixedTwelveHoursFromTheRoll() {
+    @Test fun completedRollSuppressesSlotsUntilTheNextUtcDay() {
+        val zone = ZoneOffset.ofHours(14)
+        val rollTime = date.atTime(8, 30).atZone(zone).toInstant()
+        val reset = date.atTime(14, 0).atZone(zone).toInstant()
+        val afterRoll = schedule.copy(rolledDay = ReminderPolicy.day(rollTime))
+        val beforeReset = schedule.slots(date, zone).first()
+        assertTrue(beforeReset < reset)
+        assertFalse(afterRoll.canDeliver(beforeReset, beforeReset, zone))
+        assertEquals(schedule.slots(date, zone).first { it >= reset }, afterRoll.next(rollTime, zone))
+    }
+
+    @Test fun pastSlotsAreSkippedAndDeliveredSlotsCannotBeReused() {
+        val slots = schedule.slots(date, moscow)
+        val first = slots.first()
+        assertEquals(slots[1], schedule.next(first, moscow))
+        val delivered = schedule.copy(deliveryDate = date, deliveredCount = 1, lastDelivery = first)
+        assertFalse(delivered.canDeliver(first, first, moscow))
+        assertEquals(slots[1], delivered.next(first.minusSeconds(600), moscow))
+    }
+
+    @Test fun changingCountStillRespectsHowManyWereDeliveredToday() {
+        val now = date.atTime(8, 0).atZone(moscow).toInstant()
+        val limited = schedule.copy(count = 2, deliveryDate = date, deliveredCount = 3)
+        assertEquals(limited.slots(date.plusDays(1), moscow).first(), limited.next(now, moscow))
+        assertNull(limited.copy(count = 0).next(now, moscow))
+    }
+
+    @Test fun staleOrEarlyDeliveriesAreRejected() {
+        val first = schedule.slots(date, moscow).first()
+        assertFalse(schedule.canDeliver(first, first.minusMillis(1), moscow))
+        assertTrue(schedule.canDeliver(first, first.plusSeconds(600), moscow))
+        assertFalse(schedule.canDeliver(first, first.plusSeconds(1800), moscow))
+    }
+
+    @Test fun onlyTheSitesPostRollCountdownConfirmsTheUtcRollDay() {
         val now = Instant.parse("2026-11-11T20:30:00Z")
-        assertNull(ReminderPolicy.confirmedReset("12h 00m 00s", now))
-        assertEquals(Instant.parse("2026-11-12T00:00:00Z"), ReminderPolicy.confirmedReset("3h 29m 59s", now))
-    }
-
-    @Test fun invalidOrStaleCountdownCannotScheduleANotification() {
-        val now = Instant.parse("2026-11-11T23:57:41Z")
-        assertNull(ReminderPolicy.confirmedReset("", now))
-        assertNull(ReminderPolicy.confirmedReset("24h 00m 00s", now))
-        assertNull(ReminderPolicy.confirmedReset("0h 02m 99s", now))
-        assertNull(ReminderPolicy.confirmedReset("0h 00m 00s", now))
-    }
-
-    @Test fun legacyRollDayPreservesItsResetInstant() {
-        val roll = Instant.parse("2026-11-11T23:59:59Z")
-        assertEquals(Instant.parse("2026-11-12T00:00:00Z"), ReminderPolicy.resetAfterDay(ReminderPolicy.day(roll)))
-    }
-
-    @Test fun reminderCannotFireEarlyAndExpiresAfterTheDeliveryWindow() {
-        val reset = Instant.parse("2026-11-12T00:00:00Z")
-        assertFalse(ReminderPolicy.canDeliver(reset, reset.minusMillis(1)))
-        assertTrue(ReminderPolicy.canDeliver(reset, reset))
-        assertTrue(ReminderPolicy.canDeliver(reset, reset.plusSeconds(600)))
-        assertFalse(ReminderPolicy.canDeliver(reset, reset.plusSeconds(3600)))
+        assertEquals(ReminderPolicy.day(now), ReminderPolicy.confirmedRollDay("3h 29m 59s", now))
+        assertNull(ReminderPolicy.confirmedRollDay("12h 00m 00s", now))
+        assertNull(ReminderPolicy.confirmedRollDay("0h 02m 99s", now))
+        assertNull(ReminderPolicy.confirmedRollDay("0h 00m 00s", now))
     }
 }
