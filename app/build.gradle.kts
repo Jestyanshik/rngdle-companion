@@ -16,8 +16,8 @@ android {
         applicationId = "app.rngdle.companion"
         minSdk = 28
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
         buildConfigField("String", "RELEASE_REPOSITORY", "\"$releaseRepository\"")
     }
 

@@ -2,6 +2,8 @@ package app.rngdle.companion.update
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.core.content.pm.PackageInfoCompat
 import app.rngdle.companion.BuildConfig
 import java.io.File
@@ -14,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class Release(
@@ -23,7 +26,9 @@ data class Release(
     val size: Long,
     val hash: String,
     val download: URI,
-)
+) {
+    val fileName: String get() = "rngdle-companion-vc$versionCode.apk"
+}
 
 class GitHubReleaseRepository(private val context: Context) {
     private val repository = BuildConfig.RELEASE_REPOSITORY
@@ -39,35 +44,63 @@ class GitHubReleaseRepository(private val context: Context) {
         val connection = connect(url, setOf("api.github.com"), "application/vnd.github+json")
         try {
             if (connection.responseCode == 404) return@withContext null
-            val release = JSONObject(connection.body { readBounded(it, 1_000_000).decodeToString() })
-            val assets = release.getJSONArray("assets")
-            val candidates = (0 until assets.length()).mapNotNull { index ->
-                val asset = assets.getJSONObject(index)
-                val version = ReleasePolicy.versionCode(asset.getString("name")) ?: return@mapNotNull null
-                version to asset
-            }
-            val (version, asset) = candidates.singleOrNull()
-                ?: throw IOException("Unexpected release asset list")
-            if (!ReleasePolicy.isUpdate(installedVersion(), version)) return@withContext null
-            val size = asset.getLong("size")
-            if (size !in 1..MAX_APK_SIZE) throw IOException("Invalid APK size")
-            val digest = ReleasePolicy.sha256(asset.optString("digest"))
-                ?: throw IOException("Missing release digest")
-            val download = URI(asset.getString("browser_download_url"))
-            if (download.host != "github.com" ||
-                !download.rawPath.startsWith("/$repository/releases/download/")
-            ) throw IOException("Unexpected release URL")
-            Release(
-                title = release.optString("name").takeIf { it.isNotBlank() } ?: release.getString("tag_name"),
-                changelog = release.optString("body"),
-                versionCode = version,
-                size = size,
-                hash = digest,
-                download = download,
-            )
+            val release = parseRelease(JSONObject(connection.body(::readMetadata)))
+                ?: throw IOException("Invalid release metadata")
+            release.takeIf { ReleasePolicy.isUpdate(installedVersion(), it.versionCode) }
         } finally {
             connection.disconnect()
         }
+    }
+
+    suspend fun history(): List<Release> = withContext(Dispatchers.IO) {
+        check(configured)
+        val releases = mutableListOf<Release>()
+        var page = 1
+        var more: Boolean
+        do {
+            currentCoroutineContext().ensureActive()
+            val url = URI("https://api.github.com/repos/$repository/releases?per_page=25&page=$page")
+            val connection = connect(url, setOf("api.github.com"), "application/vnd.github+json")
+            try {
+                val entries = JSONArray(connection.body(::readMetadata))
+                for (index in 0 until entries.length()) {
+                    entries.optJSONObject(index)?.let(::parseRelease)?.let(releases::add)
+                }
+                more = connection.getHeaderField("Link")?.contains("rel=\"next\"") == true
+            } finally {
+                connection.disconnect()
+            }
+            page++
+        } while (more)
+        releases.sortedByDescending(Release::versionCode)
+    }
+
+    private fun parseRelease(release: JSONObject): Release? {
+        if (release.optBoolean("draft") || release.optBoolean("prerelease")) return null
+        val assets = release.optJSONArray("assets") ?: return null
+        val candidates = (0 until assets.length()).mapNotNull { index ->
+            val asset = assets.optJSONObject(index) ?: return@mapNotNull null
+            val version = ReleasePolicy.versionCode(asset.optString("name")) ?: return@mapNotNull null
+            version to asset
+        }
+        val (version, asset) = candidates.singleOrNull() ?: return null
+        val size = asset.optLong("size")
+        if (size !in 1..MAX_APK_SIZE) return null
+        val digest = ReleasePolicy.sha256(asset.optString("digest")) ?: return null
+        val tag = release.optString("tag_name").takeIf { it.isNotBlank() } ?: return null
+        val download = runCatching { URI(asset.optString("browser_download_url")) }.getOrNull() ?: return null
+        if (download.scheme != "https" || download.host != "github.com" ||
+            download.path != "/$repository/releases/download/$tag/${asset.optString("name")}" ||
+            download.rawQuery != null || download.rawFragment != null
+        ) return null
+        return Release(
+            title = release.optString("name").ifBlank { tag },
+            changelog = release.optString("body"),
+            versionCode = version,
+            size = size,
+            hash = digest,
+            download = download,
+        )
     }
 
     suspend fun download(release: Release, onProgress: (Float) -> Unit): File = withContext(Dispatchers.IO) {
@@ -113,6 +146,22 @@ class GitHubReleaseRepository(private val context: Context) {
         }
     }
 
+    suspend fun saveArchive(release: Release, file: File, destination: Uri) = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        try {
+            check(ReleasePolicy.isRollback(installedVersion(), release.versionCode))
+            val output = resolver.openOutputStream(destination, "wt") ?: throw IOException("Cannot open document")
+            output.use { target ->
+                file.inputStream().buffered().use { input ->
+                    if (input.copyTo(target) != release.size) throw IOException("Incomplete APK copy")
+                }
+            }
+        } catch (error: Exception) {
+            runCatching { DocumentsContract.deleteDocument(resolver, destination) }
+            throw error
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun verifyPackage(file: File, expectedVersion: Long) {
         val packages = context.packageManager
@@ -124,7 +173,6 @@ class GitHubReleaseRepository(private val context: Context) {
         val downloadedSigners = downloaded.signingInfo?.apkContentsSigners?.toSet()
         if (downloaded.packageName != context.packageName ||
             PackageInfoCompat.getLongVersionCode(downloaded) != expectedVersion ||
-            !ReleasePolicy.isUpdate(PackageInfoCompat.getLongVersionCode(installed), expectedVersion) ||
             installedSigners.isNullOrEmpty() || installedSigners != downloadedSigners
         ) throw IOException("APK package, version or signer mismatch")
     }
@@ -159,13 +207,13 @@ class GitHubReleaseRepository(private val context: Context) {
         return inputStream.use(read)
     }
 
-    private fun readBounded(input: InputStream, limit: Int): ByteArray {
+    private fun readMetadata(input: InputStream): String {
         val output = java.io.ByteArrayOutputStream()
         val buffer = ByteArray(8192)
         while (true) {
             val size = input.read(buffer)
-            if (size < 0) return output.toByteArray()
-            if (output.size() + size > limit) throw IOException("Release response exceeds limit")
+            if (size < 0) return output.toByteArray().decodeToString()
+            if (output.size() + size > 1_000_000) throw IOException("Release response exceeds limit")
             output.write(buffer, 0, size)
         }
     }

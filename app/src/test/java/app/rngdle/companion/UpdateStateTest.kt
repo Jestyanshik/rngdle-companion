@@ -1,6 +1,7 @@
 package app.rngdle.companion
 
 import app.rngdle.companion.update.Release
+import java.io.File
 import java.net.URI
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +16,7 @@ class UpdateStateTest {
         assertTrue(UpdateState.Idle.canCheck)
         assertFalse(UpdateState.Checking.canCheck)
         assertFalse(UpdateState.Downloading(.5f).canCheck)
+        assertFalse(UpdateState.SavingArchive(UpdateState.Ready(release, File("example.apk"))).canCheck)
         assertTrue(UpdateState.Failed().canCheck)
     }
 
@@ -23,6 +25,7 @@ class UpdateStateTest {
         assertEquals(release, UpdateState.Failed(release).releaseToDownload)
         assertNull(UpdateState.Failed().releaseToDownload)
         assertNull(UpdateState.Downloading(0f).releaseToDownload)
+        assertNull(UpdateState.History(listOf(release)).releaseToDownload)
         assertNull(UpdateState.Current.releaseToDownload)
     }
 }

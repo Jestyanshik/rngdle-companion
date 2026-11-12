@@ -11,4 +11,6 @@ object ReleasePolicy {
         digestPattern.matchEntire(digest)?.groupValues?.get(1)?.lowercase()
 
     fun isUpdate(installed: Long, offered: Long): Boolean = offered > installed
+
+    fun isRollback(installed: Long, offered: Long): Boolean = offered < installed
 }

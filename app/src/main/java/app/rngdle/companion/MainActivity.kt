@@ -86,6 +86,14 @@ class MainActivity : ComponentActivity() {
     private var notificationAccess by mutableStateOf(false)
     private var testAfterPermission = false
 
+    private val archiveDestination = registerForActivityResult(
+        ActivityResultContracts.CreateDocument(APK_MIME_TYPE)
+    ) { destination ->
+        if (!model.finishArchiveSave(destination)) {
+            Toast.makeText(this, "Не удалось сохранить APK. Скачайте его заново.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
@@ -308,9 +316,19 @@ class MainActivity : ComponentActivity() {
         }
         val uri = FileProvider.getUriForFile(this, "$packageName.updates", file)
         val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .setDataAndType(uri, APK_MIME_TYPE)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         return if (openSettings(intent)) null else "Системный установщик APK недоступен."
+    }
+
+    private fun chooseArchiveDestination() {
+        val name = model.beginArchiveSave() ?: return
+        try {
+            archiveDestination.launch(name)
+        } catch (_: ActivityNotFoundException) {
+            model.finishArchiveSave(null)
+            Toast.makeText(this, "Системный выбор папки недоступен.", Toast.LENGTH_LONG).show()
+        }
     }
 
     @Composable
@@ -411,7 +429,10 @@ class MainActivity : ComponentActivity() {
                     onNotificationAccess = ::requestNotifications,
                     onExactAccess = ::requestExactAlarm,
                     onCheck = model::checkUpdates,
+                    onBrowseVersions = model::browseVersions,
+                    onSelectVersion = model::selectVersion,
                     onDownload = model::downloadUpdate,
+                    onSaveArchive = ::chooseArchiveDestination,
                     onInstall = { apk ->
                         installUpdate(apk)?.let { message -> scope.launch { snackbar.showSnackbar(message) } }
                     },
@@ -435,6 +456,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
+        const val APK_MIME_TYPE = "application/vnd.android.package-archive"
         const val COMPATIBLE_RENDERING = "compatible_site_rendering"
     }
 }

@@ -5,6 +5,11 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published release to test for version selection and rollback
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,10 +73,82 @@ jobs:
           adb shell input keyevent 82
           adb shell wm size 540x960
           adb shell wm density 240
-      - name: Verify that the game and rankings draw on Android
+      - name: Verify the Android app
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
+          tap_label() {
+            local x y
+            adb shell uiautomator dump /sdcard/navigation.xml
+            adb pull /sdcard/navigation.xml navigation.xml
+            read -r x y < <(python - "$1" <<'PY'
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          for node in ET.parse("navigation.xml").iter("node"):
+              labels = re.split(r"\n|, ", node.get("text", "")) + [node.get("content-desc")]
+              if any(label and sys.argv[1].casefold() == label.casefold() for label in labels):
+                  x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
+                  print((x1 + x2) // 2, (y1 + y2) // 2)
+                  break
+          else:
+              raise SystemExit(f"Control is absent: {sys.argv[1]}")
+          PY
+            ) || return 1
+            adb shell input tap "$x" "$y"
+          }
+          if [[ -n "$RELEASE_TAG" ]]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern 'rngdle-companion-vc*.apk'
+            apks=(rngdle-companion-vc*.apk)
+            [[ ${#apks[@]} == 1 && "${apks[0]}" =~ ^rngdle-companion-vc([1-9][0-9]*)\.apk$ ]]
+            installed_code="${BASH_REMATCH[1]}"
+            previous="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -se --argjson code "$installed_code" '
+              add | map(select(.draft == false and .prerelease == false) | . as $release | .assets[]
+                | select(.name | test("^rngdle-companion-vc[1-9][0-9]*\\.apk$"))
+                | {file: .name, size, digest, tag: $release.tag_name,
+                   label: (if ($release.name // "") == "" then $release.tag_name else $release.name end),
+                   code: (.name | capture("vc(?<number>[0-9]+)").number | tonumber)})
+              | map(select(.code < $code)) | max_by(.code)')"
+            old_file="$(jq -r '.file' <<< "$previous")"
+            old_size="$(jq -r '.size' <<< "$previous")"
+            old_digest="$(jq -r '.digest | sub("^sha256:"; "")' <<< "$previous")"
+            [[ "$old_digest" =~ ^[0-9a-f]{64}$ ]]
+            package=app.rngdle.companion
+            adb install -g "${apks[0]}"
+            adb shell am start -W -n "$package/$package.MainActivity"
+            trap 'adb exec-out screencap -p > rollback.png' EXIT
+            tap_label "Настройки"
+            adb shell input swipe 270 760 270 255 450
+            tap_label "Выбрать версию"
+            adb shell input swipe 270 750 270 360 400
+            tap_label "$(jq -r '.label' <<< "$previous")"
+            tap_label "Скачать APK"
+            for _ in {1..8}; do
+              if tap_label "Сохранить APK для отката"; then break; fi
+              sleep 2
+            done
+            if tap_label "Show roots"; then tap_label "Downloads"; fi
+            tap_label "Save"
+            for _ in {1..20}; do
+              if [[ "$(adb shell stat -c %s "/sdcard/Download/$old_file" 2>/dev/null | tr -d '\r' || true)" == "$old_size" ]]; then break; fi
+              sleep 1
+            done
+            adb pull "/sdcard/Download/$old_file" archived.apk
+            printf '%s  archived.apk\n' "$old_digest" | sha256sum -c -
+            adb exec-out screencap -p > rollback-saved.png
+            if adb install -r archived.apk > rollback.log 2>&1; then exit 1; fi
+            grep -F INSTALL_FAILED_VERSION_DOWNGRADE rollback.log
+            adb uninstall "$package"
+            adb pull "/sdcard/Download/$old_file" archived.apk
+            printf '%s  archived.apk\n' "$old_digest" | sha256sum -c -
+            adb install archived.apk
+            adb shell dumpsys package "$package" | grep -F "versionName=$(jq -r '.tag | ltrimstr("v")' <<< "$previous")"
+            exit
+          fi
           adb install -g app-debug.apk
           adb logcat -c
           adb shell am start -W -n app.rngdle.companion.debug/app.rngdle.companion.MainActivity
@@ -87,25 +164,6 @@ jobs:
           trap 'adb logcat -d -s "RNGdleWeb:I" "*:S" > webview.log' EXIT
           wait_for_frame 1
           adb exec-out screencap -p > play.png
-          tap_label() {
-            local x y
-            adb shell uiautomator dump /sdcard/navigation.xml
-            adb pull /sdcard/navigation.xml navigation.xml
-            read -r x y < <(python - "$1" <<'PY'
-          import re
-          import sys
-          import xml.etree.ElementTree as ET
-          for node in ET.parse("navigation.xml").iter("node"):
-              if sys.argv[1] in (node.get("text"), node.get("content-desc")):
-                  x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
-                  print((x1 + x2) // 2, (y1 + y2) // 2)
-                  break
-          else:
-              raise SystemExit(f"Control is absent: {sys.argv[1]}")
-          PY
-            )
-            adb shell input tap "$x" "$y"
-          }
           tap_label "Рейтинг"
           wait_for_frame 2
           adb exec-out screencap -p > rankings.png
@@ -131,4 +189,7 @@ jobs:
             webview.log
             test-notification.png
             test-notification.log
+            rollback.png
+            rollback-saved.png
+            rollback.log
             ${{ runner.temp }}/rngdle-emulator.log

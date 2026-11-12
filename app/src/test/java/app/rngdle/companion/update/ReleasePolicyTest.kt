@@ -21,6 +21,12 @@ class ReleasePolicyTest {
         assertFalse(ReleasePolicy.isUpdate(11, 10))
     }
 
+    @Test fun onlyOlderVersionCodesNeedTheRollbackFlow() {
+        assertTrue(ReleasePolicy.isRollback(10, 9))
+        assertFalse(ReleasePolicy.isRollback(10, 10))
+        assertFalse(ReleasePolicy.isRollback(10, 11))
+    }
+
     @Test fun requiresFullSha256Metadata() {
         assertEquals("ab".repeat(32), ReleasePolicy.sha256("sha256:" + "AB".repeat(32)))
         assertNull(ReleasePolicy.sha256("sha256:12345"))

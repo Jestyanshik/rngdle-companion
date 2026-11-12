@@ -1,6 +1,7 @@
 package app.rngdle.companion
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.rngdle.companion.reminder.ReminderPolicy
@@ -12,6 +13,7 @@ import app.rngdle.companion.site.PageState
 import app.rngdle.companion.site.SitePage
 import app.rngdle.companion.update.GitHubReleaseRepository
 import app.rngdle.companion.update.Release
+import app.rngdle.companion.update.ReleasePolicy
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -95,15 +97,30 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     fun needsRollObservation(day: Long): Boolean = observedRollDay != day
 
     fun checkUpdates() {
+        loadReleases { releases.check()?.let { UpdateState.Available(it) } ?: UpdateState.Current }
+    }
+
+    fun browseVersions() {
+        loadReleases { UpdateState.History(releases.history()) }
+    }
+
+    private fun loadReleases(load: suspend () -> UpdateState) {
         if (!updateConfigured || !mutableUpdate.value.canCheck) return
         mutableUpdate.value = UpdateState.Checking
         viewModelScope.launch {
             mutableUpdate.value = try {
-                releases.check()?.let { UpdateState.Available(it) } ?: UpdateState.Current
+                load()
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 UpdateState.Failed()
             }
+        }
+    }
+
+    fun selectVersion(release: Release) {
+        val history = mutableUpdate.value as? UpdateState.History ?: return
+        if (release in history.releases && release.versionCode != BuildConfig.VERSION_CODE.toLong()) {
+            mutableUpdate.value = UpdateState.Available(release)
         }
     }
 
@@ -113,11 +130,38 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             mutableUpdate.value = try {
                 val apk = releases.download(release) { mutableUpdate.value = UpdateState.Downloading(it) }
-                UpdateState.Ready(apk)
+                UpdateState.Ready(release, apk)
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 UpdateState.Failed(release)
             }
         }
+    }
+
+    fun beginArchiveSave(): String? {
+        val download = mutableUpdate.value as? UpdateState.Ready ?: return null
+        if (!ReleasePolicy.isRollback(BuildConfig.VERSION_CODE.toLong(), download.release.versionCode)) return null
+        mutableUpdate.value = UpdateState.SavingArchive(download)
+        return download.release.fileName
+    }
+
+    fun finishArchiveSave(destination: Uri?): Boolean {
+        val saving = mutableUpdate.value as? UpdateState.SavingArchive ?: return destination == null
+        val download = saving.download
+        if (destination == null) {
+            mutableUpdate.value = download
+            return true
+        }
+        viewModelScope.launch {
+            val result = try {
+                releases.saveArchive(download.release, download.apk, destination)
+                ArchiveSave.SAVED
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                ArchiveSave.FAILED
+            }
+            mutableUpdate.value = download.copy(archiveSave = result)
+        }
+        return true
     }
 }
