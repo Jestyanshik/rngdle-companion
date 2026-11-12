@@ -22,11 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class CompanionViewModel(application: Application) : AndroidViewModel(application) {
     private val reminders = ReminderRepository(application)
     private val scheduler = ReminderScheduler(application)
     private val releases = GitHubReleaseRepository(application)
+    private val reminderSoundSettings = Mutex()
     private var observedRollDay: Long? = null
 
     private val mutablePage = MutableStateFlow(SitePage.PLAY)
@@ -55,8 +58,12 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setAlarmMode(enabled: Boolean) = reminderAction {
-        reminders.setAlarmMode(enabled)
+        reminderSoundSettings.withLock { reminders.setAlarmMode(enabled) }
         scheduler.schedule()
+    }
+
+    fun setNotificationVolume(percent: Int) = reminderAction {
+        reminderSoundSettings.withLock { reminders.setNotificationVolume(percent) }
     }
 
     fun adjustReminderCount(delta: Int) = reminderAction {
@@ -66,7 +73,10 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun reschedule() = reminderAction { scheduler.schedule() }
 
-    suspend fun postTestNotification(): Boolean = scheduler.postTestNotification(reminders.options.first().alarmMode)
+    suspend fun postTestNotification(): Boolean {
+        val options = reminderSoundSettings.withLock { reminders.options.first() }
+        return scheduler.postTestNotification(options)
+    }
 
     private fun reminderAction(action: suspend () -> Unit) {
         viewModelScope.launch {

@@ -425,6 +425,7 @@ class MainActivity : ComponentActivity() {
                         model.setAlarmMode(enabled)
                         if (enabled && reminderOptions.count > 0 && !exactAccess) requestExactAlarm()
                     },
+                    onNotificationVolumeChange = model::setNotificationVolume,
                     onTestNotification = ::testNotification,
                     onNotificationAccess = ::requestNotifications,
                     onExactAccess = ::requestExactAlarm,

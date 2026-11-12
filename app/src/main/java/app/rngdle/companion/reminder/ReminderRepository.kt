@@ -15,12 +15,13 @@ import kotlinx.coroutines.flow.map
 
 private val Context.reminderStore by preferencesDataStore("reminders")
 
-internal data class RollReminder(val at: Instant, val alarmMode: Boolean)
+internal data class RollReminder(val at: Instant, val options: ReminderOptions)
 
 class ReminderRepository(context: Context) {
     private val store = context.applicationContext.reminderStore
     private val alarm = booleanPreferencesKey("alarm")
     private val count = intPreferencesKey("daily_reminder_count")
+    private val notificationVolume = intPreferencesKey("notification_volume_percent")
     private val seed = longPreferencesKey("daily_reminder_seed")
     private val pendingAt = longPreferencesKey("daily_reminder_pending_at")
     private val rolledDay = longPreferencesKey("observed_roll_day")
@@ -37,6 +38,10 @@ class ReminderRepository(context: Context) {
 
     suspend fun adjustCount(delta: Int) {
         store.edit { it[count] = (optionsFrom(it).count + delta).coerceIn(0, ReminderOptions.MAX_COUNT) }
+    }
+
+    suspend fun setNotificationVolume(percent: Int) {
+        store.edit { it[notificationVolume] = percent.coerceIn(0, 100) }
     }
 
     internal suspend fun recordRoll(day: Long) {
@@ -56,7 +61,7 @@ class ReminderRepository(context: Context) {
             if (at == null) data.remove(pendingAt)
             else {
                 data[pendingAt] = at.epochSecond
-                reminder = RollReminder(at, options.alarmMode)
+                reminder = RollReminder(at, options)
             }
         }
         return reminder
@@ -76,7 +81,7 @@ class ReminderRepository(context: Context) {
             data[deliveryDay] = today
             data[deliveredCount] = sent + 1
             data[lastDelivery] = at.epochSecond
-            reminder = RollReminder(at, options.alarmMode)
+            reminder = RollReminder(at, options)
         }
         return reminder
     }
@@ -84,6 +89,7 @@ class ReminderRepository(context: Context) {
     private fun optionsFrom(data: Preferences) = ReminderOptions(
         count = (data[count] ?: ReminderOptions().count).coerceIn(0, ReminderOptions.MAX_COUNT),
         alarmMode = data[alarm] ?: false,
+        notificationVolume = (data[notificationVolume] ?: ReminderOptions.DEFAULT_NOTIFICATION_VOLUME).coerceIn(0, 100),
     )
 
     private fun lastRollDay(data: Preferences): Long? = listOfNotNull(

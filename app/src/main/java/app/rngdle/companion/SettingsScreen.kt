@@ -16,11 +16,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -30,6 +35,7 @@ import app.rngdle.companion.reminder.ReminderOptions
 import app.rngdle.companion.update.Release
 import app.rngdle.companion.update.ReleasePolicy
 import java.io.File
+import kotlin.math.roundToInt
 
 @Composable
 internal fun SettingsScreen(
@@ -43,6 +49,7 @@ internal fun SettingsScreen(
     onRenderingChange: (Boolean) -> Unit,
     onReminderCountChange: (Int) -> Unit,
     onAlarmModeChange: (Boolean) -> Unit,
+    onNotificationVolumeChange: (Int) -> Unit,
     onTestNotification: () -> Unit,
     onNotificationAccess: () -> Unit,
     onExactAccess: () -> Unit,
@@ -80,6 +87,7 @@ internal fun SettingsScreen(
                 ) { Text("+") }
             }
             SettingSwitch("Будильник", reminderOptions.alarmMode, onAlarmModeChange)
+            NotificationVolumeSlider(reminderOptions.notificationVolume, onNotificationVolumeChange)
             OutlinedButton(onClick = onTestNotification) { Text("Проверить уведомление") }
             if (count > 0 && !notificationAccess) {
                 OutlinedButton(onClick = onNotificationAccess) { Text("Разрешить уведомления Android") }
@@ -126,6 +134,26 @@ internal fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NotificationVolumeSlider(savedVolume: Int, onSave: (Int) -> Unit) {
+    var volume by remember(savedVolume) { mutableIntStateOf(savedVolume) }
+    val label = "Громкость уведомления"
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label)
+            Text("$volume%")
+        }
+        Slider(
+            value = volume.toFloat(),
+            onValueChange = { volume = it.roundToInt() },
+            onValueChangeFinished = { if (volume != savedVolume) onSave(volume) },
+            valueRange = 0f..100f,
+            steps = 19,
+            modifier = Modifier.semantics { contentDescription = label },
+        )
     }
 }
 
@@ -190,6 +218,10 @@ private fun Release.isRollback(): Boolean = ReleasePolicy.isRollback(BuildConfig
 private fun SettingSwitch(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(
+            checked = checked,
+            onCheckedChange = onChecked,
+            modifier = Modifier.semantics { contentDescription = label },
+        )
     }
 }

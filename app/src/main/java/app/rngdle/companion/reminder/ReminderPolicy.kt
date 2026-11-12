@@ -8,9 +8,14 @@ import java.time.ZoneOffset
 import kotlin.math.abs
 import kotlin.random.Random
 
-data class ReminderOptions(val count: Int = 3, val alarmMode: Boolean = false) {
+data class ReminderOptions(
+    val count: Int = 3,
+    val alarmMode: Boolean = false,
+    val notificationVolume: Int = DEFAULT_NOTIFICATION_VOLUME,
+) {
     companion object {
         const val MAX_COUNT = 8
+        const val DEFAULT_NOTIFICATION_VOLUME = 40
     }
 }
 

@@ -90,7 +90,9 @@ jobs:
           import re
           import sys
           import xml.etree.ElementTree as ET
-          for node in ET.parse("navigation.xml").iter("node"):
+          nodes = ET.parse("navigation.xml").findall(".//node")
+          nodes.sort(key=lambda node: not node.get("content-desc"))
+          for node in nodes:
               labels = re.split(r"\n|, ", node.get("text", "")) + [node.get("content-desc")]
               if any(label and sys.argv[1].casefold() == label.casefold() for label in labels):
                   x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
@@ -156,6 +158,7 @@ jobs:
             exit
           fi
           adb install -g app-debug.apk
+          adb shell appops set app.rngdle.companion.debug SCHEDULE_EXACT_ALARM allow
           adb logcat -c
           adb shell am start -W -n app.rngdle.companion.debug/app.rngdle.companion.MainActivity
           wait_for_frame() {
@@ -174,14 +177,53 @@ jobs:
           wait_for_frame 2
           adb exec-out screencap -p > rankings.png
           tap_label "Настройки"
-          adb shell input swipe 270 700 270 420 400
-          tap_label "Проверить уведомление"
-          for _ in {1..10}; do
-            if adb shell dumpsys notification | grep -F 'app.rngdle.companion.debug' \
-              | grep -E 'id=28.*channel=roll_ready_v2' > test-notification.log; then break; fi
-            sleep 1
-          done
-          test -s test-notification.log
+          tap_settings_label "Проверить уведомление"
+          wait_for_notification() {
+            for _ in {1..10}; do
+              if adb shell dumpsys notification | grep -F 'app.rngdle.companion.debug' \
+                | grep -E "id=28.*channel=$1" >> test-notification.log; then return; fi
+              sleep 1
+            done
+            return 1
+          }
+          wait_for_notification roll_ready_v3
+          adb exec-out run-as app.rngdle.companion.debug cat files/reminder-sound/roll_alert.wav > reminder-default.wav
+          adb shell dumpsys activity permissions | grep -F 'app.rngdle.companion.debug.reminder-sound/sound/roll_alert.wav' >> test-notification.log
+          read -r x y < <(python - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          for node in ET.parse("navigation.xml").iter("node"):
+              if node.get("content-desc") == "Громкость уведомления":
+                  x1, y1, _, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
+                  print(x1 + 6, (y1 + y2) // 2)
+                  break
+          PY
+          )
+          adb shell input tap "$x" "$y"
+          tap_settings_label "Проверить уведомление"
+          wait_for_notification roll_ready_v3
+          adb exec-out run-as app.rngdle.companion.debug cat files/reminder-sound/roll_alert.wav > reminder-muted.wav
+          python - <<'PY'
+          import io
+          import struct
+          import wave
+          from zipfile import ZipFile
+
+          def samples(file):
+              with wave.open(file, 'rb') as sound:
+                  assert sound.getsampwidth() == 2
+                  return [value for (value,) in struct.iter_unpack('<h', sound.readframes(sound.getnframes()))]
+
+          with ZipFile('app-debug.apk') as apk:
+              original = samples(io.BytesIO(apk.read('res/raw/roll_alert.wav')))
+          default = samples('reminder-default.wav')
+          muted = samples('reminder-muted.wav')
+          assert default == [int(sample * 40 / 100) for sample in original], 'Expected 40% volume'
+          assert len(muted) == len(original) and not any(muted), 'Expected 0% volume'
+          PY
+          tap_settings_label "Будильник"
+          tap_settings_label "Проверить уведомление"
+          wait_for_notification roll_alarm_v2
           adb shell cmd statusbar expand-notifications
           sleep 1
           adb exec-out screencap -p > test-notification.png
@@ -195,6 +237,8 @@ jobs:
             webview.log
             test-notification.png
             test-notification.log
+            reminder-default.wav
+            reminder-muted.wav
             rollback.png
             rollback-saved.png
             rollback.log

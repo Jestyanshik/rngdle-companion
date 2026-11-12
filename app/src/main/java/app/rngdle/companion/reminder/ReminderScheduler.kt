@@ -11,8 +11,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
-import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
@@ -23,6 +23,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.rngdle.companion.MainActivity
 import app.rngdle.companion.R
+import java.io.IOException
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -38,6 +39,7 @@ import kotlinx.coroutines.withContext
 class ReminderScheduler(private val context: Context) {
     private val repository = ReminderRepository(context)
     private val alarms = context.getSystemService(AlarmManager::class.java)
+    private val sound = ReminderSound(context)
 
     fun hasExactAccess(): Boolean =
         Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()
@@ -61,9 +63,11 @@ class ReminderScheduler(private val context: Context) {
         }
     }
 
-    suspend fun postTestNotification(alarm: Boolean): Boolean = withContext(Dispatchers.IO) {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        notificationsAllowed(manager) && post(manager, alarm, test = true)
+    suspend fun postTestNotification(options: ReminderOptions): Boolean = withContext(Dispatchers.IO) {
+        scheduleLock.withLock {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            notificationsAllowed(manager) && post(manager, options, test = true)
+        }
     }
 
     private suspend fun scheduleNext() {
@@ -83,7 +87,7 @@ class ReminderScheduler(private val context: Context) {
         val operation = checkNotNull(alarmIntent(reminder.at))
         val exactScheduled = if (hasExactAccess()) {
             try {
-                if (reminder.alarmMode) {
+                if (reminder.options.alarmMode) {
                     alarms.setAlarmClock(AlarmManager.AlarmClockInfo(trigger, openApp()), operation)
                 } else {
                     alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, operation)
@@ -109,7 +113,7 @@ class ReminderScheduler(private val context: Context) {
     private suspend fun postIfDue(at: Instant, now: Instant, zone: ZoneId) {
         val manager = context.getSystemService(NotificationManager::class.java)
         val reminder = repository.consume(at, now, zone, notificationsAllowed(manager)) ?: return
-        post(manager, reminder.alarmMode)
+        post(manager, reminder.options)
     }
 
     private fun notificationsAllowed(manager: NotificationManager): Boolean =
@@ -118,35 +122,61 @@ class ReminderScheduler(private val context: Context) {
                 context, Manifest.permission.POST_NOTIFICATIONS,
             ) == PackageManager.PERMISSION_GRANTED)
 
-    private fun post(manager: NotificationManager, alarm: Boolean, test: Boolean = false): Boolean {
-        val channelId = if (alarm) "roll_alarm_v2" else "roll_ready_v2"
-        val sound = if (alarm) R.raw.roll_alarm else R.raw.roll_alert
-        val soundName = context.resources.getResourceEntryName(sound)
-        val channel = NotificationChannel(
-            channelId,
-            if (alarm) "Будильник RNGdle" else "Ролл доступен",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            setSound(
-                Uri.parse("android.resource://${context.packageName}/raw/$soundName"),
-                AudioAttributes.Builder()
-                    .setUsage(if (alarm) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
-        }
-        manager.createNotificationChannel(channel)
-        if (manager.getNotificationChannel(channelId)?.importance == NotificationManager.IMPORTANCE_NONE) return false
-        val builder = NotificationCompat.Builder(context, channelId)
+    private fun post(manager: NotificationManager, options: ReminderOptions, test: Boolean = false): Boolean {
+        val alarm = options.alarmMode
+        val channel = reminderChannel(manager, alarm)
+        if (channel.importance == NotificationManager.IMPORTANCE_NONE) return false
+        val builder = NotificationCompat.Builder(context, channel.id)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Пора прокрутить RNGdle")
             .setContentText("Откройте игру, чтобы сделать дневной ролл.")
             .setContentIntent(openApp())
             .setCategory(if (alarm) Notification.CATEGORY_ALARM else Notification.CATEGORY_REMINDER)
             .setAutoCancel(true)
+        if (!alarm && channel.sound == sound.notificationUri) {
+            try {
+                sound.prepareNotification(options.notificationVolume)
+            } catch (_: IOException) {
+                Log.w("RNGdleReminders", "notification_sound_unavailable")
+                builder.setSilent(true)
+            }
+        }
         if (test) builder.setSubText("Проверка").setTimeoutAfter(60_000)
         manager.notify(if (test) TEST_NOTIFICATION_ID else NOTIFICATION_ID, builder.build())
         return true
+    }
+
+    private fun reminderChannel(manager: NotificationManager, alarm: Boolean): NotificationChannel {
+        val id = if (alarm) "roll_alarm_v2" else "roll_ready_v3"
+        manager.getNotificationChannel(id)?.let { return it }
+        val previous = if (alarm) null else manager.getNotificationChannel("roll_ready_v2")
+        val channel = NotificationChannel(
+            id,
+            if (alarm) "Будильник RNGdle" else "Ролл доступен",
+            previous?.importance ?: NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            val uri = when {
+                alarm -> sound.alarmUri
+                previous != null && previous.sound == null -> null
+                else -> sound.notificationUri
+            }
+            setSound(
+                uri,
+                AudioAttributes.Builder()
+                    .setUsage(if (alarm) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            previous?.let {
+                setShowBadge(it.canShowBadge())
+                enableLights(it.shouldShowLights())
+                lightColor = it.lightColor
+                vibrationPattern = it.vibrationPattern
+                enableVibration(it.shouldVibrate())
+            }
+        }
+        manager.createNotificationChannel(channel)
+        return manager.getNotificationChannel(id) ?: channel
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(
