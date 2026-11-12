@@ -1,6 +1,7 @@
 package app.rngdle.companion.reminder
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.util.AtomicFile
 import androidx.core.content.FileProvider
@@ -35,6 +36,12 @@ internal class ReminderSound(private val context: Context) {
         } catch (error: Exception) {
             destination.failWrite(output)
             throw error
+        }
+        // SystemUI can start playing before Android dispatches the notification's URI grants.
+        try {
+            context.grantUriPermission("com.android.systemui", notificationUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+            // The notification service also grants its own reader access on delivery.
         }
     }
 }

@@ -10,6 +10,10 @@ on:
         description: Published release to test for version selection and rollback
         required: false
         type: string
+      verify_live_site:
+        description: Check the live game and rankings before testing reminder sounds
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -78,6 +82,7 @@ jobs:
       - name: Verify the Android app
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          VERIFY_LIVE_SITE: ${{ inputs.verify_live_site }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
@@ -170,12 +175,14 @@ jobs:
             done
             return 1
           }
-          trap 'adb logcat -d -s "RNGdleWeb:I" "*:S" > webview.log' EXIT
-          wait_for_frame 1
-          adb exec-out screencap -p > play.png
-          tap_label "Рейтинг"
-          wait_for_frame 2
-          adb exec-out screencap -p > rankings.png
+          trap 'adb logcat -d -s "RNGdleWeb:I" "RNGdleReminders:W" "*:S" > webview.log; adb exec-out screencap -p > smoke-final.png' EXIT
+          if [[ "$VERIFY_LIVE_SITE" == true ]]; then
+            wait_for_frame 1
+            adb exec-out screencap -p > play.png
+            tap_label "Рейтинг"
+            wait_for_frame 2
+            adb exec-out screencap -p > rankings.png
+          fi
           tap_label "Настройки"
           tap_settings_label "Проверить уведомление"
           wait_for_notification() {
@@ -224,6 +231,8 @@ jobs:
           tap_settings_label "Будильник"
           tap_settings_label "Проверить уведомление"
           wait_for_notification roll_alarm_v2
+          if adb logcat -d -s 'RingtonePlayer:W' 'AsyncRingtonePlayer:W' 'NotificationService:W' '*:S' \
+            | grep -F 'app.rngdle.companion.debug.reminder-sound/sound/roll_alert.wav'; then exit 1; fi
           adb shell cmd statusbar expand-notifications
           sleep 1
           adb exec-out screencap -p > test-notification.png
@@ -237,6 +246,7 @@ jobs:
             webview.log
             test-notification.png
             test-notification.log
+            smoke-final.png
             reminder-default.wav
             reminder-muted.wav
             rollback.png
