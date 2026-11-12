@@ -18,7 +18,10 @@ internal class ReminderSound(private val context: Context) {
         get() = FileProvider.getUriForFile(context, "${context.packageName}.reminder-sound", file)
 
     val alarmUri: Uri
-        get() = Uri.parse("android.resource://${context.packageName}/raw/${context.resources.getResourceEntryName(R.raw.roll_alarm)}")
+        get() {
+            val name = context.resources.getResourceEntryName(R.raw.roll_alarm)
+            return Uri.parse("android.resource://${context.packageName}/raw/$name")
+        }
 
     fun prepareNotification(volume: Int) {
         val source = context.resources.openRawResource(R.raw.roll_alert).use { it.readBytes() }

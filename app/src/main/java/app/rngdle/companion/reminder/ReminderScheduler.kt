@@ -39,7 +39,7 @@ import kotlinx.coroutines.withContext
 class ReminderScheduler(private val context: Context) {
     private val repository = ReminderRepository(context)
     private val alarms = context.getSystemService(AlarmManager::class.java)
-    private val sound = ReminderSound(context)
+    private val reminderSound = ReminderSound(context)
 
     fun hasExactAccess(): Boolean =
         Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()
@@ -133,9 +133,9 @@ class ReminderScheduler(private val context: Context) {
             .setContentIntent(openApp())
             .setCategory(if (alarm) Notification.CATEGORY_ALARM else Notification.CATEGORY_REMINDER)
             .setAutoCancel(true)
-        if (!alarm && channel.sound == sound.notificationUri) {
+        if (!alarm && channel.sound == reminderSound.notificationUri) {
             try {
-                sound.prepareNotification(options.notificationVolume)
+                reminderSound.prepareNotification(options.notificationVolume)
             } catch (_: IOException) {
                 Log.w("RNGdleReminders", "notification_sound_unavailable")
                 builder.setSilent(true)
@@ -156,9 +156,9 @@ class ReminderScheduler(private val context: Context) {
             previous?.importance ?: NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             val uri = when {
-                alarm -> sound.alarmUri
+                alarm -> reminderSound.alarmUri
                 previous != null && previous.sound == null -> null
-                else -> sound.notificationUri
+                else -> reminderSound.notificationUri
             }
             setSound(
                 uri,
