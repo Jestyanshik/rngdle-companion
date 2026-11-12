@@ -14,13 +14,17 @@ on:
         description: Check the live game and rankings before testing reminder sounds
         default: true
         type: boolean
+      debug_run_id:
+        description: Reuse the debug APK from this Android workflow run
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
-    if: github.event_name != 'workflow_dispatch' || inputs.release_tag == ''
+    if: github.event_name != 'workflow_dispatch' || (inputs.release_tag == '' && inputs.debug_run_id == '')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -40,15 +44,20 @@ jobs:
           if-no-files-found: error
 
   webview-smoke:
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && (inputs.release_tag != '' || needs.build.result == 'success') }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && (inputs.release_tag != '' || inputs.debug_run_id != '' || needs.build.result == 'success') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 12
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/download-artifact@v4
         if: inputs.release_tag == ''
         with:
           name: rngdle-companion-debug
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.debug_run_id || github.run_id }}
       - name: Start an Android emulator
         shell: bash
         run: |
@@ -228,8 +237,12 @@ jobs:
           assert default == [int(sample * 40 / 100) for sample in original], 'Expected 40% volume'
           assert len(muted) == len(original) and not any(muted), 'Expected 0% volume'
           PY
-          for _ in {1..3}; do tap_settings_label "Уменьшить число напоминаний"; done
+          sleep 8
           tap_settings_label "Будильник"
+          sleep 2
+          if adb shell dumpsys window | grep -E 'mCurrentFocus=.*com.android.settings'; then
+            adb shell input keyevent KEYCODE_BACK
+          fi
           tap_settings_label "Проверить уведомление"
           wait_for_notification roll_alarm_v2
           if adb logcat -d -s 'RingtonePlayer:W' 'AsyncRingtonePlayer:W' 'NotificationService:W' '*:S' \
