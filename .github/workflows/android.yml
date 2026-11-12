@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.release_tag == ''
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -35,12 +36,13 @@ jobs:
           if-no-files-found: error
 
   webview-smoke:
-    if: github.event_name == 'workflow_dispatch'
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && (inputs.release_tag != '' || needs.build.result == 'success') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/download-artifact@v4
+        if: inputs.release_tag == ''
         with:
           name: rngdle-companion-debug
       - name: Start an Android emulator
@@ -92,6 +94,8 @@ jobs:
               labels = re.split(r"\n|, ", node.get("text", "")) + [node.get("content-desc")]
               if any(label and sys.argv[1].casefold() == label.casefold() for label in labels):
                   x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
+                  if x1 == x2 or y1 == y2:
+                      continue
                   print((x1 + x2) // 2, (y1 + y2) // 2)
                   break
           else:
@@ -99,6 +103,13 @@ jobs:
           PY
             ) || return 1
             adb shell input tap "$x" "$y"
+          }
+          tap_settings_label() {
+            for _ in {1..5}; do
+              if tap_label "$1"; then return; fi
+              adb shell input swipe 265 710 265 300 400
+            done
+            return 1
           }
           if [[ -n "$RELEASE_TAG" ]]; then
             [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -122,11 +133,9 @@ jobs:
             adb shell am start -W -n "$package/$package.MainActivity"
             trap 'adb exec-out screencap -p > rollback.png' EXIT
             tap_label "Настройки"
-            adb shell input swipe 270 760 270 255 450
-            tap_label "Выбрать версию"
-            adb shell input swipe 270 750 270 360 400
-            tap_label "$(jq -r '.label' <<< "$previous")"
-            tap_label "Скачать APK"
+            tap_settings_label "Выбрать версию"
+            tap_settings_label "$(jq -r '.label' <<< "$previous")"
+            tap_settings_label "Скачать APK"
             for _ in {1..8}; do
               if tap_label "Сохранить APK для отката"; then break; fi
               sleep 2
