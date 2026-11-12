@@ -196,19 +196,20 @@ jobs:
           wait_for_notification roll_ready_v3
           adb exec-out run-as app.rngdle.companion.debug cat files/reminder-sound/roll_alert.wav > reminder-default.wav
           adb shell dumpsys activity permissions | grep -F 'app.rngdle.companion.debug.reminder-sound/sound/roll_alert.wav' >> test-notification.log
-          read -r x y < <(python - <<'PY'
+          read -r start end y < <(python - <<'PY'
           import re
           import xml.etree.ElementTree as ET
           for node in ET.parse("navigation.xml").iter("node"):
               if node.get("content-desc") == "Громкость уведомления":
-                  x1, y1, _, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
-                  print(x1 + 6, (y1 + y2) // 2)
+                  x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
+                  print(x1 + (x2 - x1) * 40 // 100, x1 + 2, (y1 + y2) // 2)
                   break
           PY
           )
-          adb shell input tap "$x" "$y"
+          adb shell input swipe "$start" "$y" "$end" "$y" 600
           tap_settings_label "Проверить уведомление"
           wait_for_notification roll_ready_v3
+          sleep 1
           adb exec-out run-as app.rngdle.companion.debug cat files/reminder-sound/roll_alert.wav > reminder-muted.wav
           python - <<'PY'
           import io
