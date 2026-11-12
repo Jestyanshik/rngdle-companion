@@ -163,7 +163,6 @@ jobs:
             exit
           fi
           adb install -g app-debug.apk
-          adb shell appops set app.rngdle.companion.debug SCHEDULE_EXACT_ALARM allow
           adb logcat -c
           adb shell am start -W -n app.rngdle.companion.debug/app.rngdle.companion.MainActivity
           wait_for_frame() {
@@ -229,6 +228,7 @@ jobs:
           assert default == [int(sample * 40 / 100) for sample in original], 'Expected 40% volume'
           assert len(muted) == len(original) and not any(muted), 'Expected 0% volume'
           PY
+          for _ in {1..3}; do tap_settings_label "Уменьшить число напоминаний"; done
           tap_settings_label "Будильник"
           tap_settings_label "Проверить уведомление"
           wait_for_notification roll_alarm_v2
