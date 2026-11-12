@@ -136,10 +136,7 @@ jobs:
             tap_settings_label "Выбрать версию"
             tap_settings_label "$(jq -r '.label' <<< "$previous")"
             tap_settings_label "Скачать APK"
-            for _ in {1..8}; do
-              if tap_label "Сохранить APK для отката"; then break; fi
-              sleep 2
-            done
+            tap_settings_label "Сохранить APK для отката"
             if tap_label "Show roots"; then tap_label "Downloads"; fi
             tap_label "Save"
             for _ in {1..20}; do
