@@ -45,7 +45,7 @@ internal data class DailySchedule(
 
     internal fun slots(date: LocalDate, zone: ZoneId): List<Instant> {
         if (count == 0) return emptyList()
-        val start = date.atTime(8, 0).atZone(zone).toInstant()
+        val start = date.atStartOfDay(zone).toInstant()
         val end = date.plusDays(1).atStartOfDay(zone).toInstant()
         val seconds = Duration.between(start, end).seconds
         if (seconds <= 0) return emptyList()

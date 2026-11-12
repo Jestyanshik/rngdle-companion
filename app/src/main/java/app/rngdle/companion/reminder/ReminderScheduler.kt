@@ -61,6 +61,11 @@ class ReminderScheduler(private val context: Context) {
         }
     }
 
+    suspend fun postTestNotification(alarm: Boolean): Boolean = withContext(Dispatchers.IO) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        notificationsAllowed(manager) && post(manager, alarm, test = true)
+    }
+
     private suspend fun scheduleNext() {
         var now = Instant.now()
         val zone = ZoneId.systemDefault()
@@ -103,14 +108,17 @@ class ReminderScheduler(private val context: Context) {
 
     private suspend fun postIfDue(at: Instant, now: Instant, zone: ZoneId) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        val permitted = Build.VERSION.SDK_INT < 33 ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        val reminder = repository.consume(at, now, zone, permitted && manager.areNotificationsEnabled()) ?: return
+        val reminder = repository.consume(at, now, zone, notificationsAllowed(manager)) ?: return
         post(manager, reminder.alarmMode)
     }
 
-    private fun post(manager: NotificationManager, alarm: Boolean) {
+    private fun notificationsAllowed(manager: NotificationManager): Boolean =
+        manager.areNotificationsEnabled() &&
+            (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED)
+
+    private fun post(manager: NotificationManager, alarm: Boolean, test: Boolean = false): Boolean {
         val channelId = if (alarm) "roll_alarm_v2" else "roll_ready_v2"
         val sound = if (alarm) R.raw.roll_alarm else R.raw.roll_alert
         val soundName = context.resources.getResourceEntryName(sound)
@@ -128,15 +136,17 @@ class ReminderScheduler(private val context: Context) {
             )
         }
         manager.createNotificationChannel(channel)
-        val notification = NotificationCompat.Builder(context, channelId)
+        if (manager.getNotificationChannel(channelId)?.importance == NotificationManager.IMPORTANCE_NONE) return false
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Пора прокрутить RNGdle")
             .setContentText("Откройте игру, чтобы сделать дневной ролл.")
             .setContentIntent(openApp())
             .setCategory(if (alarm) Notification.CATEGORY_ALARM else Notification.CATEGORY_REMINDER)
             .setAutoCancel(true)
-            .build()
-        manager.notify(NOTIFICATION_ID, notification)
+        if (test) builder.setSubText("Проверка").setTimeoutAfter(60_000)
+        manager.notify(if (test) TEST_NOTIFICATION_ID else NOTIFICATION_ID, builder.build())
+        return true
     }
 
     private fun openApp(): PendingIntent = PendingIntent.getActivity(
@@ -155,6 +165,7 @@ class ReminderScheduler(private val context: Context) {
         internal const val ALARM_ACTION = "app.rngdle.companion.RESET_ALARM"
         internal const val REMINDER_AT = "daily_reminder_at"
         private const val NOTIFICATION_ID = 27
+        private const val TEST_NOTIFICATION_ID = 28
         private val scheduleLock = Mutex()
     }
 }

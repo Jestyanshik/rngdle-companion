@@ -36,9 +36,11 @@ If the site stays black, enable compatible site rendering in the app's settings.
 
 ## Reminders
 
-Set the number of daily reminders from zero to eight. The default is three. The app picks a random time within each evenly spaced interval from 08:00 to midnight in the phone's time zone. Once the original Play page shows a post-roll countdown, the app skips any remaining reminders for that UTC game day. A roll made elsewhere is detected when its result and countdown appear in the app.
+Set the number of daily reminders from zero to eight. The default is three. The app picks a random time within each evenly spaced interval across the full calendar day in the phone's time zone. Once the original Play page shows a post-roll countdown, the app skips any remaining reminders for that UTC game day. A roll made elsewhere is detected when its result and countdown appear in the app.
 
 The notification uses a short slot-style chime. The Alarm switch selects a longer melody and uses the system alarm clock when Android grants exact-alarm access. Android can defer delivery when exact access is unavailable. WorkManager provides a delayed backup and the app restores the pending schedule after reboot.
+
+The test notification uses the current sound mode and appears immediately when Android allows it. It has a separate notification ID and leaves the daily schedule and count alone.
 
 ## Publish and update
 

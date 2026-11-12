@@ -15,6 +15,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -57,6 +58,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import app.rngdle.companion.reminder.ReminderScheduler
 import app.rngdle.companion.reminder.ReminderOptions
@@ -67,6 +69,7 @@ import app.rngdle.companion.site.SitePage
 import app.rngdle.companion.site.SiteWebView
 import app.rngdle.companion.site.needsSignIn
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -81,11 +84,16 @@ class MainActivity : ComponentActivity() {
     private var compatibleRendering by mutableStateOf(false)
     private var exactAccess by mutableStateOf(false)
     private var notificationAccess by mutableStateOf(false)
+    private var testAfterPermission = false
 
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
         refreshPermissions()
+        if (testAfterPermission) {
+            testAfterPermission = false
+            if (notificationAccess) postTestNotification()
+        }
         model.reschedule()
     }
 
@@ -94,6 +102,7 @@ class MainActivity : ComponentActivity() {
         val darkBars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = darkBars, navigationBarStyle = darkBars)
         companionSettings = savedInstanceState?.getBoolean("companionSettings") ?: false
+        testAfterPermission = savedInstanceState?.getBoolean("testAfterPermission") ?: false
         compatibleRendering = getPreferences(MODE_PRIVATE).getBoolean(COMPATIBLE_RENDERING, false)
         setContentView(createLayout())
         createWebView()
@@ -101,6 +110,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("companionSettings", companionSettings)
+        outState.putBoolean("testAfterPermission", testAfterPermission)
         super.onSaveInstanceState(outState)
     }
 
@@ -108,6 +118,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         web?.onResume()
         refreshPermissions()
+        if (testAfterPermission && notificationAccess) {
+            testAfterPermission = false
+            postTestNotification()
+        }
         model.reschedule()
     }
 
@@ -132,6 +146,8 @@ class MainActivity : ComponentActivity() {
                 onState = { model.showPageState(it); updateSiteVisibility() },
                 onPage = { model.selectPage(it); updateSiteVisibility() },
                 onAuth = { model.showAuthState(it); updateSiteVisibility() },
+                needsRollObservation = model::needsRollObservation,
+                onCountdown = model::observeCountdown,
                 onRendererGone = {
                     if (web === it) web = null
                     it.dispose()
@@ -253,6 +269,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun testNotification() {
+        if (notificationAccess) postTestNotification()
+        else {
+            testAfterPermission = true
+            requestNotifications()
+        }
+    }
+
+    private fun postTestNotification() {
+        lifecycleScope.launch {
+            try {
+                if (!model.postTestNotification()) {
+                    Toast.makeText(this@MainActivity, "Этот канал отключён в настройках уведомлений Android.", Toast.LENGTH_LONG).show()
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                Toast.makeText(this@MainActivity, "Не удалось показать проверочное уведомление.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun openSettings(intent: Intent): Boolean = try {
         startActivity(intent)
         true
@@ -291,12 +328,12 @@ class MainActivity : ComponentActivity() {
         }
 
         LaunchedEffect(companionSettings, web) {
+            if (companionSettings) return@LaunchedEffect
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 while (true) {
                     val current = web
                     canGoBack = current?.canNavigateBack() == true
-                    current?.inspectPage()
-                    if (!companionSettings) current?.readVisibleCountdown(model::observeCountdown)
+                    current?.inspectForeground()
                     delay(650)
                 }
             }
@@ -370,6 +407,7 @@ class MainActivity : ComponentActivity() {
                         model.setAlarmMode(enabled)
                         if (enabled && reminderOptions.count > 0 && !exactAccess) requestExactAlarm()
                     },
+                    onTestNotification = ::testNotification,
                     onNotificationAccess = ::requestNotifications,
                     onExactAccess = ::requestExactAlarm,
                     onCheck = model::checkUpdates,

@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          adb install app-debug.apk
+          adb install -g app-debug.apk
           adb logcat -c
           adb shell am start -W -n app.rngdle.companion.debug/app.rngdle.companion.MainActivity
           wait_for_frame() {
@@ -87,23 +87,40 @@ jobs:
           trap 'adb logcat -d -s "RNGdleWeb:I" "*:S" > webview.log' EXIT
           wait_for_frame 1
           adb exec-out screencap -p > play.png
-          adb shell uiautomator dump /sdcard/navigation.xml
-          adb pull /sdcard/navigation.xml navigation.xml
-          read -r x y < <(python - <<'PY'
+          tap_label() {
+            local x y
+            adb shell uiautomator dump /sdcard/navigation.xml
+            adb pull /sdcard/navigation.xml navigation.xml
+            read -r x y < <(python - "$1" <<'PY'
           import re
+          import sys
           import xml.etree.ElementTree as ET
           for node in ET.parse("navigation.xml").iter("node"):
-              if "Рейтинг" in (node.get("text"), node.get("content-desc")):
+              if sys.argv[1] in (node.get("text"), node.get("content-desc")):
                   x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.attrib["bounds"]))
                   print((x1 + x2) // 2, (y1 + y2) // 2)
                   break
           else:
-              raise SystemExit("Rankings tab is absent")
+              raise SystemExit(f"Control is absent: {sys.argv[1]}")
           PY
-          )
-          adb shell input tap "$x" "$y"
+            )
+            adb shell input tap "$x" "$y"
+          }
+          tap_label "Рейтинг"
           wait_for_frame 2
           adb exec-out screencap -p > rankings.png
+          tap_label "Настройки"
+          adb shell input swipe 270 700 270 420 400
+          tap_label "Проверить уведомление"
+          for _ in {1..10}; do
+            if adb shell dumpsys notification | grep -F 'app.rngdle.companion.debug' \
+              | grep -E 'id=28.*channel=roll_ready_v2' > test-notification.log; then break; fi
+            sleep 1
+          done
+          test -s test-notification.log
+          adb shell cmd statusbar expand-notifications
+          sleep 1
+          adb exec-out screencap -p > test-notification.png
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -112,4 +129,6 @@ jobs:
             play.png
             rankings.png
             webview.log
+            test-notification.png
+            test-notification.log
             ${{ runner.temp }}/rngdle-emulator.log

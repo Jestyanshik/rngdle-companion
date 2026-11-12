@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -63,6 +64,8 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun reschedule() = reminderAction { scheduler.schedule() }
 
+    suspend fun postTestNotification(): Boolean = scheduler.postTestNotification(reminders.options.first().alarmMode)
+
     private fun reminderAction(action: suspend () -> Unit) {
         viewModelScope.launch {
             try {
@@ -88,6 +91,8 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
     }
+
+    fun needsRollObservation(day: Long): Boolean = observedRollDay != day
 
     fun checkUpdates() {
         if (!updateConfigured || !mutableUpdate.value.canCheck) return

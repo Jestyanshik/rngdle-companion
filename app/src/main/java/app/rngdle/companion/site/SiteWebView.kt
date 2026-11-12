@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
 import android.net.http.SslError
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.ConsoleMessage
@@ -20,9 +21,13 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import app.rngdle.companion.reminder.ReminderPolicy
+import java.net.URI
 import java.time.Instant
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import org.json.JSONObject
-import org.json.JSONTokener
 
 class SiteWebView(
     context: Context,
@@ -31,6 +36,8 @@ class SiteWebView(
     private val onState: (PageState) -> Unit,
     private val onPage: (SitePage) -> Unit,
     private val onAuth: (AuthState) -> Unit,
+    private val needsRollObservation: (Long) -> Boolean,
+    private val onCountdown: (String) -> Unit,
     private val onRendererGone: (SiteWebView) -> Unit,
 ) : WebView(context) {
     private var pageState: PageState = PageState.Loading
@@ -40,6 +47,7 @@ class SiteWebView(
     private var committed = false
     private var documentVersion = 0
     private var inspectedVersion: Int? = null
+    private var lastInspectionAt: Long? = null
     private var visualRequestVersion: Int? = null
     private var drawableVersion: Int? = null
     private var loginClicked = false
@@ -47,7 +55,7 @@ class SiteWebView(
     private var jsErrorReported = false
     private var resourceErrorReported = false
     private var homeReadyDay: Long? = null
-    private val observeScript = context.assets.open("site-observer.js").bufferedReader().use { it.readText() }
+    private val observeScript = context.assets.open("site-observer.js").bufferedReader().use { it.readText().trim() }
     private val loginScript = context.assets.open("site-open-login.js").bufferedReader().use { it.readText() }
     private val pageDeadline = Runnable {
         if (pageState == PageState.Loading) {
@@ -345,20 +353,41 @@ class SiteWebView(
 
     fun canNavigateBack(): Boolean = !clearAuthHistory && canGoBack()
 
-    fun inspectPage() {
+    fun inspectForeground() {
+        val current = url?.let(Site::firstParty) ?: return
+        val last = lastInspectionAt
+        val active = pageState == PageState.Loading ||
+            auth in listOf(AuthState.OPENING_FORM, AuthState.ENTER_EMAIL, AuthState.COMPLETING) ||
+            shouldReadCountdown(current)
+        if (active || last == null || SystemClock.elapsedRealtime() - last >= IDLE_INSPECTION_MS) {
+            inspectPage()
+        }
+    }
+
+    private fun isHome(uri: URI): Boolean =
+        uri.path in listOf("", "/") && uri.rawQuery == null && uri.rawFragment == null
+
+    private fun shouldReadCountdown(uri: URI): Boolean =
+        pageState == PageState.Ready && !clearAuthHistory && isHome(uri) &&
+            needsRollObservation(ReminderPolicy.day(Instant.now()))
+
+    private fun inspectPage() {
         val current = url?.let(Site::firstParty) ?: return
         val version = documentVersion
-        if (!committed || pageState is PageState.Failed || inspectedVersion == version) return
+        if (!isShown || !committed || pageState is PageState.Failed || inspectedVersion == version) return
         inspectedVersion = version
-        evaluateJavascript(observeScript) { encoded ->
+        lastInspectionAt = SystemClock.elapsedRealtime()
+        val checkContent = pageState == PageState.Loading
+        val checkCountdown = shouldReadCountdown(current)
+        evaluateJavascript("$observeScript($checkContent, $checkCountdown)") { encoded ->
             if (inspectedVersion == version) inspectedVersion = null
-            if (version != documentVersion || pageState is PageState.Failed ||
+            if (!isShown || version != documentVersion || pageState is PageState.Failed ||
                 url?.let(Site::firstParty) != current
             ) return@evaluateJavascript
             val snapshot = runCatching { JSONObject(encoded) }.getOrNull() ?: return@evaluateJavascript
             val marker = AccountMarker.entries.firstOrNull { it.name == snapshot.optString("account") }
                 ?: AccountMarker.UNKNOWN
-            val isHome = current.path in listOf("", "/") && current.rawQuery == null && current.rawFragment == null
+            val isHome = isHome(current)
             val wasCompleting = auth == AuthState.COMPLETING
             setAuth(auth.observe(marker))
             if (wasCompleting && auth == AuthState.SIGNED_IN) {
@@ -376,6 +405,12 @@ class SiteWebView(
                 clearHistory()
                 clearAuthHistory = false
             }
+            if (checkCountdown && pageState == PageState.Ready) {
+                val day = ReminderPolicy.day(Instant.now())
+                val countdown = snapshot.opt("countdown") as? String
+                if (countdown == null) homeReadyDay = day
+                else if (homeReadyDay == day) onCountdown(countdown)
+            }
             if (auth == AuthState.OPENING_FORM && marker == AccountMarker.SIGNED_OUT && !loginClicked) {
                 loginClicked = true
                 evaluateJavascript(loginScript) { result ->
@@ -385,40 +420,9 @@ class SiteWebView(
         }
     }
 
-    fun readVisibleCountdown(onCountdown: (String) -> Unit) {
-        val current = url?.let(Site::firstParty) ?: return
-        if (pageState != PageState.Ready || clearAuthHistory || current.path !in listOf("", "/") ||
-            current.rawQuery != null || current.rawFragment != null
-        ) return
-        // This samples only the public label and its visible countdown. It cannot act on the page.
-        evaluateJavascript(
-            """
-            (() => {
-                if (!['https://www.rngdle.com','https://rngdle.com'].includes(location.origin) ||
-                    location.pathname !== '/' || location.search) return null;
-                for (const label of document.querySelectorAll('span')) {
-                    if (label.children.length || label.textContent.trim() !== 'Next roll in') continue;
-                    const value = label.nextElementSibling;
-                    const visible = (element) => element.getClientRects().length &&
-                        getComputedStyle(element).visibility === 'visible';
-                    if (value && visible(label) && visible(value)) {
-                        return value.textContent.trim();
-                    }
-                }
-                return null;
-            })()
-            """.trimIndent()
-        ) { encoded ->
-            if (pageState == PageState.Ready && url?.let(Site::firstParty) == current) {
-                val day = ReminderPolicy.day(Instant.now())
-                val countdown = runCatching { JSONTokener(encoded).nextValue() }.getOrNull() as? String
-                if (countdown == null) homeReadyDay = day
-                else if (homeReadyDay == day) onCountdown(countdown)
-            }
-        }
+    fun persistSession() {
+        cookieFlushRequests.trySend(Unit)
     }
-
-    fun persistSession() = CookieManager.getInstance().flush()
 
     fun dispose() {
         started = false
@@ -432,6 +436,18 @@ class SiteWebView(
 
     companion object {
         private const val TAG = "RNGdleWeb"
+        private const val IDLE_INSPECTION_MS = 2_000L
+        private val cookieFlushRequests = Channel<Unit>(Channel.CONFLATED).also { requests ->
+            CoroutineScope(Dispatchers.IO).launch {
+                for (request in requests) {
+                    try {
+                        CookieManager.getInstance().flush()
+                    } catch (_: RuntimeException) {
+                        Log.w(TAG, "cookie_flush_failed")
+                    }
+                }
+            }
+        }
         fun openBrowser(context: Context, uri: Uri): Boolean =
             try {
                 context.startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE))

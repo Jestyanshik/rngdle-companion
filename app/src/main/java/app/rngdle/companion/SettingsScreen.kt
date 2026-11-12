@@ -39,6 +39,7 @@ internal fun SettingsScreen(
     onRenderingChange: (Boolean) -> Unit,
     onReminderCountChange: (Int) -> Unit,
     onAlarmModeChange: (Boolean) -> Unit,
+    onTestNotification: () -> Unit,
     onNotificationAccess: () -> Unit,
     onExactAccess: () -> Unit,
     onCheck: () -> Unit,
@@ -55,7 +56,7 @@ internal fun SettingsScreen(
             Text("Включите, если вкладки сайта отображаются чёрными.")
             HorizontalDivider()
             Text("Напоминания", style = MaterialTheme.typography.titleLarge)
-            Text("В случайное время с 08:00 до полуночи по времени телефона. После ролла напоминания за игровой день отменяются.")
+            Text("В случайное время круглые сутки. После ролла напоминания за игровой день отменяются.")
             val count = reminderOptions.count
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Напоминаний в день", Modifier.weight(1f))
@@ -72,6 +73,7 @@ internal fun SettingsScreen(
                 ) { Text("+") }
             }
             SettingSwitch("Будильник", reminderOptions.alarmMode, onAlarmModeChange)
+            OutlinedButton(onClick = onTestNotification) { Text("Проверить уведомление") }
             if (count > 0 && !notificationAccess) {
                 OutlinedButton(onClick = onNotificationAccess) { Text("Разрешить уведомления Android") }
             }

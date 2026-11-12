@@ -18,14 +18,26 @@ class ReminderPolicyTest {
 
     @Test fun countIsSpreadAcrossTheLocalWindowAndStableForEachDate() {
         val slots = schedule.slots(date, moscow)
-        val start = date.atTime(8, 0).atZone(moscow).toInstant()
+        val start = date.atStartOfDay(moscow).toInstant()
         assertEquals(8, slots.size)
         slots.forEachIndexed { index, at ->
             val fromStart = Duration.between(start, at).seconds
-            assertTrue(fromStart in (index * 7200L + 1800)..(index * 7200L + 5399))
+            assertTrue(fromStart in (index * 10800L + 2700)..(index * 10800L + 8099))
         }
         assertTrue(slots.zipWithNext().all { (first, second) -> Duration.between(first, second).toHours() >= 1 })
         assertEquals(slots, schedule.slots(date, moscow))
+    }
+
+    @Test fun daylightSavingChangeStillSpreadsRemindersAcrossTheWholeLocalDay() {
+        val zone = ZoneId.of("America/New_York")
+        val date = LocalDate.of(2026, 3, 8)
+        val start = date.atStartOfDay(zone).toInstant()
+        val end = date.plusDays(1).atStartOfDay(zone).toInstant()
+        val slots = schedule.slots(date, zone)
+        assertEquals(23, Duration.between(start, end).toHours())
+        assertEquals(schedule.count, slots.size)
+        assertTrue(slots.all { it >= start && it < end })
+        assertEquals(slots.sorted(), slots)
     }
 
     @Test fun completedRollSuppressesSlotsUntilTheNextUtcDay() {

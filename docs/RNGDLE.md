@@ -30,6 +30,6 @@ Both hosts returned HTTP 404 for the Digital Asset Links file after following th
 
 1. Establish a single Android WebView for Play, Rankings, Friends and Profile. Keep first-party storage across navigation and process restarts. Compose owns Android navigation, retry states and companion settings.
 2. Verify the magic-link path and expired sessions on a physical device with an authorized account. Exercise a deliberate roll, history, collection, profile edits, friend requests and Party where available.
-3. Spread the configured number of reminders across the local 08:00 to midnight window. Persist the UTC day confirmed by the post-roll countdown and skip its remaining reminders. Use AlarmManager and a delayed WorkManager backup. The alarm switch selects the longer melody.
+3. Spread the configured number of reminders across the entire local calendar day. Persist the UTC day confirmed by the post-roll countdown and skip its remaining reminders. Use AlarmManager and a delayed WorkManager backup. The test notification uses the sound selected by the alarm switch.
 4. Build and sign on GitHub Actions. Publish a versioned APK as a GitHub Release. Compare its versionCode and validate the downloaded APK before handing it to the Android installer.
 5. Consider Room and native account screens when a supported read contract exists. Scope cached account data to its identity and expire it on sign-out. Until then, WebView provides the site's complete data and storage.
